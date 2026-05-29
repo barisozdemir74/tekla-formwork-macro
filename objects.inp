@@ -1,0 +1,1169 @@
+/*****************************************************************************
+object(int dummy_number, char *object_name)
+{
+
+    attribute( char *attribute_name,
+               char *label_text,
+               int   value_type,
+               char *field_format,
+               int   special_flag, 
+               int   check_switch,
+               char *attribute_value_max,
+               char *attribute_value_min )
+    {
+        value( char *attribute_value,
+               int   default_switch )
+    }
+    modify( int modify_type )
+}
+
+where object is part, welding or bolt
+
+****************************************************************************/
+
+/*---------------------------------------------------------------------------
+object(int *dummy_number, char *object_name)
+
+dummy_number:       dummy parameter
+object_name:        unique name for object (part || bolt || welding ...)
+
+---------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------
+attribute( char *attribute_name,
+           char *label_text,
+           int   value_type,
+           char *field_format,
+           int   special_flag, 
+           int   check_switch,
+           char *attribute_value_max,
+           char *attribute_value_min )
+
+     attribute_name: unique name of attribute,
+                     used for inquiring attribute value
+         label_text: label text shown in dialog
+         value_type: integer || float || string || option || label || material ||
+                     profile || file_in || file_out || bolt_standard || bolt_size ||
+                     ratio || strain || angle || deformation || dimension ||
+                     radiusofinertia || area || areaperlength || sectionmodulus ||
+                     momentofinertia || torsionconstant || warpingconstant ||
+                     force || weight || distribload || springconstant || surfaceload
+                     strength || modulus || density || moment || distribmoment ||
+                     rotspringconst || temperature || thermdilatcoeff
+       field_format: C-like format definition for dialog field
+       special_flag: yes || no
+                     For parts         : consider in numering
+                     For drawings      : display the attribute's value in drawing list
+                     For other elements: (no effect)
+
+                     Note: Special flag is not considered for attribute "FixedMainView".
+
+       check_switch: none
+attribute_value_max: allowed maximum value of attribute
+attribute_value_min: allowed minimum value of attribute
+---------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------
+value( char *attribute_value,
+       int   default_switch )
+
+attribute_value:     value of attribute
+default_switch:      In case of option menu attribute one of the values
+                     can be set to default value. If none is set to default
+                     the first one is taken. In case of value field
+                     default has no meaning (value is always default).
+                      	2 for default, which is not stored to the database
+                        1 for default, which is stored to the database
+                        0 for no default
+		     2 is recommended instead of 1 to avoid unnecessarily
+		     increasing the database size.
+
+---------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------
+modify( int modify_type )
+
+modify_type:         0 modify not possible
+                     1 modify is possible
+---------------------------------------------------------------------------*/
+
+
+
+/***************************************************************************/
+/* User defined attributes for objects */
+/***************************************************************************/
+/***************************************************************************/
+/* Part attributes  */
+/***************************************************************************/
+part(0,"Part")
+{
+/* Common part attribute tab pages */
+  tab_page("Parameters")
+  {
+    attribute("comment", "j_comment", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("xs_shorten", "j_xs_shorten", distance, "%d", yes, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("cambering", "j_cambering", string, "%s", yes, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("PRELIM_MARK", "j_PRELIM_MARK", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("PRELIM_ASSEM_MARK", "j_Preliminary_assembly_mark", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+    attribute("fabricator", "j_fabricator_name", string, "%s", yes, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    // === FormworkHesap: CSV ile birebir ayni kalip / beton goren yuz alani ===
+    // Organizer'da FW_ aramasi ile cikmasi icin gorunen adlar teknik adla ayni tutuldu.
+    attribute("FW_KALIP_M2", "FW_KALIP_M2", float, "%f", no, none, "0.0", "0.0")
+    {
+        value(0.0, 0)
+    }
+    attribute("FW_KALIP_M2_TXT", "FW_KALIP_M2_TXT", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("FW_AREA_M2", "FW_AREA_M2_ESKI", float, "%f", no, none, "0.0", "0.0")
+    {
+        value(0.0, 0)
+    }
+    attribute("FW_CONF", "FW_CONF", float, "%f", no, none, "0.0", "0.0")
+    {
+        value(0.0, 0)
+    }
+    attribute("FW_RULE", "FW_RULE", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("FW_CAT", "FW_CAT", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("FW_UPDATED", "FW_UPDATED", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("FW_ORG_KEY", "FW_ORG_KEY", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("USER_PHASE", "j_UserPhase_effects_numbering", string, "%s", yes, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("FixedMainView", "j_FixedDrawingMainView", option,"%s", no, none,"0.0", "0.0")
+    {
+        value("j_Default", 2)   
+        value("j_Top", 0)
+        value("j_Back", 0)
+        value("j_Bottom", 0)
+        value("j_Start", 0)
+        value("j_End", 0)
+        value("j_Front", 0)
+    }
+    attribute("PRODUCT_CODE", "j_Product_code", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("PRODUCT_DESCR", "j_Product_description", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("PRODUCT_WEBSITE", "j_Product_website", string, "%s", no, none, "0.0", "0.0") 
+    { 
+       value("", 0) 
+    }
+    attribute("PRODUCT_WEIGHT", "j_Product_weight", weight,"%d", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("PRODUCT_UNIT", "j_Product_unit", string,"%s", no, none, "0.0", "0.0") 
+    { 
+       value("", 0) 
+    }
+/***taken away 15012016 and added as an own tab page, then no risk to copy/modify by accident and have equal value for different objects
+    unique_attribute("initial_GUID", "j_initial_GUID", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+****/
+    attribute("EN1090_EXC_PART", "j_Execution_class", option,"%s", yes, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("EXC1", 0)
+	  value("EXC2", 0)
+	  value("EXC3", 0)
+	  value("EXC4", 0)
+    }
+ /***Taken away 30102017 here and moved to StructuralInformation   
+	attribute("LOAD_BEARING", "j_IFC_load_bearing", option, "%s", no, none, "0.0", "0.0")
+    {
+        value( "j_Bearing", 2 )
+        value( "j_No", 0 )
+        value( "j_Shear", 0 )
+        value( "j_Structural_combined", 0 )
+    }
+****/
+  }
+ tab_page("ContourPlateOrientation")
+  {
+    attribute("__DisableOrient", "j_Main_axis_direction", option, "%s", yes, none, "0.0", "0.0") 
+    {
+      value("j_Automatic", 2)
+      value("j_System_default", 0)
+      value("j_From_1st_to_2nd_point", 0)
+    }
+  }
+  tab_page("HiddenAttributes")
+  {
+    unique_attribute("initial_GUID", "j_initial_GUID", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+	unique_attribute("initial_profile", "albl_Initial_profile", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+	unique_attribute("SDNF_MEMBER_NUMBER", "SDNF_MEMBER_NUMBER", integer, "%d", no, none, "0.0", "0.0",0,0,0)
+    {
+        value("", 0)
+    }
+    attribute("__CustomObjectType", "albl_Custom_object_type", string, "%s", no, none, "0.0", "0.0")
+    { 
+        value("", 0) 
+    }
+  }
+ tab_page("Parameters","jd_Parameters",4) 
+ tab_page("ContourPlateOrientation","j_orientation",12)
+ tab_page("HiddenAttributes","HiddenAttributes",92)
+
+ modify(1)
+}
+
+/***************************************************************************/
+/* Beam attributes  */
+/***************************************************************************/
+beam(0,"j_beam")
+{
+ tab_page("Parameters","jd_Parameters",4)
+
+ modify(1)
+}
+/***************************************************************************/
+/* Spiral beam attributes  */
+/***************************************************************************/
+spiral_beam(0,"j_spiral_beam")
+{
+ tab_page("Parameters","jd_Parameters",4)
+
+ modify(1)
+}
+/***************************************************************************/
+/* Column attributes  */
+/***************************************************************************/
+column(0,"j_column")
+{
+ tab_page("Parameters","jd_Parameters",4)
+
+ modify(1)
+}
+/***************************************************************************/
+/* Beam/Orthogonal attributes  */
+/***************************************************************************/
+beamortho(0,"Beam/orthogonal")
+{
+ tab_page("Parameters","jd_Parameters",4)
+
+ modify(1)
+}
+/***************************************************************************/
+/* Twin profile attributes  */
+/***************************************************************************/
+twinprofile(0,"Twin profile")
+{
+ tab_page("Parameters","jd_Parameters",4)
+
+ modify(1)
+}
+/***************************************************************************/
+/* Contour plate attributes  */
+/***************************************************************************/
+contourplate(0,"j_contour_plate")
+{
+ tab_page("Parameters","jd_Parameters",4)
+ tab_page("ContourPlateOrientation","j_orientation",13)
+
+ modify(1)
+}
+/***************************************************************************/
+/* Bent plate attributes  */
+/***************************************************************************/
+bentplate(0,"j_bent_plate")
+{
+ tab_page("Parameters","jd_Parameters",4)
+ tab_page("ContourPlateOrientation","j_orientation",13) 
+ modify(1)
+}
+/***************************************************************************/
+/* Lofted plate attributes  */
+/***************************************************************************/
+loftedplate(0,"j_lofted_plate")
+{
+ tab_page("Parameters","jd_Parameters",4)
+ modify(1)
+}
+/***************************************************************************/
+/* Folded plate attributes  */
+/***************************************************************************/
+foldedplate(0,"j_folded_plate")
+{
+ tab_page("Parameters","jd_Parameters",4)
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete beam attributes  */
+/***************************************************************************/
+concrete_beam(0,"Concrete beam")
+{
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete spiral beam attributes  */
+/***************************************************************************/
+concrete_spiral_beam(0,"j_concrete_spiral_beam")
+{
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete column attributes  */
+/***************************************************************************/
+concrete_column(0,"Concrete column")
+{ 
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete pad footing attributes                                         */
+/***************************************************************************/
+pad_footing(0,"j_Pad_Footing")
+{
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete strip footing attributes                                       */
+/***************************************************************************/
+strip_footing(0,"j_Strip_Footing")
+{
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete panel attributes                                               */
+/***************************************************************************/
+concrete_panel(0,"j_Panel")
+{
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete slab attributes                                                */
+/***************************************************************************/
+concrete_slab(0,"j_Slab")
+{
+
+ modify(1)
+}
+/***************************************************************************/
+/* Concrete lofted slab attributes                                         */
+/***************************************************************************/
+loftedslab(0,"j_lofted_slab")
+{
+
+ modify(1)
+}
+/***************************************************************************/
+/* Reinforcing bar attributes                                              */
+/***************************************************************************/
+rebar(0,"j_Reinforcing_bar")
+{
+ tab_page("","jd_Parameters",3)
+  {
+    attribute("comment", "j_comment", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+	unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+      value("j_Organization", 0)
+    }
+    attribute("__Adaptivity", "albl_Adaptivity", option, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 2)
+        value("albl_Off", 0)
+        value("albl_Relative", 0)
+        value("albl_Fixed", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("USER_PHASE", "j_UserPhase_effects_numbering", string, "%s", yes, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("REBAR_SEQ_NO", "j_rebar_sequence_number", integer, "%d", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("PRODUCT_DESCR", "j_Product_description", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("FIXING_METHOD", "j_Fixing_method", option, "%s", no, none,"0.0", "0.0")
+    {
+        value("", 2)
+        value("j_Loose", 0)
+        value("j_Tied", 0)
+        value("j_Welded", 0)
+        value("j_LooseBundle", 0)
+    }
+    attribute("proIfcEntityOvrd", "j_d_j_IFC_entity", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityPreDef", "j_d_proIfcEntityPreDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityUserDef", "j_d_proIfcEntityUserDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+  }
+ tab_page("","albl_Shape_recognition",6)
+  {
+    attribute("RSR_EXT_POINT_SHORT", "albl_Extra_point_shortening", float, "%d", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("RSR_CURVE_TOLERANCE", "j_d_j_tol_curve", float, "%d", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("RSR_MAXCURVE", "albl_MAXCURVE", float, "%d", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("RSR_FORCE_STRAIGHT", "albl_Force_straight", option, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 2)
+        value("j_No", 0)
+        value("j_Yes", 0)
+    }
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Surfacing attributes                                                    */
+/***************************************************************************/
+surfacing(0,"Surfacing")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("comment", "j_comment", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+  }
+  modify(1)
+}
+
+
+/***************************************************************************/
+/* welding attributes */
+/***************************************************************************/
+welding(0,"j_welding")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("WELD_COMMENT", "j_weld_comment", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_1", "j_weld_ufield_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_2", "j_weld_ufield_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_3", "j_weld_ufield_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_4", "j_weld_ufield_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_5", "j_weld_ufield_5", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_6", "j_weld_ufield_6", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_7", "j_weld_ufield_7", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("WELD_USERFIELD_8", "j_weld_ufield_8", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+  }
+  modify(1)
+}
+/***************************************************************************/
+/* Bolt attributes */
+/***************************************************************************/
+bolt(0,"j_bolt")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("BOLT_COMMENT", "j_bolt_comment", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_1", "j_bolt_ufield_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_2", "j_bolt_ufield_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_3", "j_bolt_ufield_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_4", "j_bolt_ufield_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_5", "j_bolt_ufield_5", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_6", "j_bolt_ufield_6", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_7", "j_bolt_ufield_7", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("BOLT_USERFIELD_8", "j_bolt_ufield_8", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Phase attributes */
+/***************************************************************************/
+phase(0,"j_Phase")
+{
+    attribute("comment", "j_comment", string, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+/* --- Phase example attributes --------------------------------------------
+    attribute("example_string", "Example string", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("example_integer", "Example integer", integer, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+    attribute("example_float", "Example float", float, "%s", no, none, "0.0", "0.0") 
+    {
+        value("", 0)
+    }
+----- Phase example attributes --------------------------------------------*/
+}
+/***************************************************************************/
+/* Reference object attributes                                              */
+/***************************************************************************/
+reference_part(0,"j_Reference_object")
+{
+	tab_page("","jd_Parameters",3)
+	{
+	attribute("subref_description", "j_Description", string, "%s", no, none, "0.0", "0.0")
+	{
+	value("", 0)
+	}
+	attribute("subref_info_string", "j_Infotext", string, "%s", no, none, "0.0", "0.0")
+	{
+	value("", 0)
+	}
+	attribute("subref_logical_name", "j_Logical_name", string, "%s", no, none, "0.0", "0.0")
+	{
+	value("", 0)
+	}
+	}
+  modify(1)
+}
+
+/***************************************************************************/
+/* Assembly attributes */
+/***************************************************************************/
+steelassembly(0, "jd_SteelAssembly")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("comment", "j_a_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_a_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_a_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_a_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_a_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("PRELIM_ASSEM_MARK", "j_Preliminary_assembly_mark", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("ACN", "j_ACN_control_number", integer, "%d", no, none, "0.0", "0.0")
+    {
+	  value("", 0)
+    }
+    attribute("EN1090_EXC_ASSEMBLY", "j_Execution_class", option,"%s", yes, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("EXC1", 0)
+	  value("EXC2", 0)
+	  value("EXC3", 0)
+	  value("EXC4", 0)
+    }
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+    attribute("IFC_ENTITY_OVERRIDE", "j_d_proIfcEntityOvrd", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityOvrd", "j_d_j_IFC_entity", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityPreDef", "j_d_proIfcEntityPreDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityUserDef", "j_d_proIfcEntityUserDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+  }
+
+  modify(1)
+}
+
+
+/***************************************************************************/
+/* Precast cast unit attributes */
+/***************************************************************************/
+precastassembly(0, "jd_PrecastCastUnit")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("comment", "j_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("ACN", "j_ACN_control_number", integer, "%d", no, none, "0.0", "0.0")
+    {
+	  value("", 0)
+    }
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+    attribute("proIfcEntityOvrd", "j_d_j_IFC_entity", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityPreDef", "j_d_proIfcEntityPreDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityUserDef", "j_d_proIfcEntityUserDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+  }
+
+  modify(1)
+}
+
+
+/***************************************************************************/
+/* Cast in place cast unit attributes */
+/***************************************************************************/
+insituassembly(0, "jd_CastInPlaceCastUnit")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("comment", "j_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("ACN", "j_ACN_control_number", integer, "%d", no, none, "0.0", "0.0")
+    {
+	  value("", 0)
+    }
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+    attribute("proIfcEntityOvrd", "j_d_j_IFC_entity", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityPreDef", "j_d_proIfcEntityPreDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityUserDef", "j_d_proIfcEntityUserDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+  }
+
+  modify(1)
+}
+
+/***************************************************************************/
+/* Rebar assembly attributes                                               */
+/***************************************************************************/
+rebarassembly(0, "j_Rebar_assembly")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("comment", "j_a_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_a_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_a_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_a_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_a_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("REBAR_ASSEMBLY_TYPE", "j_Rebar_assembly_type", option, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 2)
+        value("albl_Rebar_Cage", 0)
+        value("j_mesh", 0)
+        value("albl_Bent_mesh", 0)
+        value("cs_m88_braced_girder", 0)
+        value("albl_Embed", 0)
+        value("j_Rollmat", 0)
+    }
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }	
+    attribute("proIfcEntityOvrd", "j_d_j_IFC_entity", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityPreDef", "j_d_proIfcEntityPreDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+    attribute("proIfcEntityUserDef", "j_d_proIfcEntityUserDef", string, "%s", no, none, "0.0", "0.0", -999, -999, -999)
+    {
+        value("", 0)
+    }
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Grid attributes                                                         */
+/***************************************************************************/
+grid(0,"j_Grid")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+    attribute("GRID_TEXT", "albl_Grid_Label_Text", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("COORDTRANSX_PRE", "albl_Prefix_offset_in_X", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("COORDTRANSY_PRE", "albl_Prefix_offset_in_Y", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("COORDTRANSZ_PRE", "albl_Prefix_offset_in_Z", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }	
+	attribute("COORDTRANSX", "albl_Offset_in_X", distance, "%d", no, none, "0.0", "0.0")
+    {
+         value("", 0)
+    }
+	attribute("COORDTRANSY", "albl_Offset_in_Y", distance, "%d", no, none, "0.0", "0.0")
+    {
+         value("", 0)
+    }
+	attribute("COORDTRANSZ", "albl_Offset_in_Z", distance, "%d", no, none, "0.0", "0.0")
+    {
+         value("", 0)
+    }	
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Grid plane attributes                                                   */
+/***************************************************************************/
+grid_plane(0,"j_Gridplane")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    unique_attribute("OBJECT_LOCKED", "j_Locked", option,"%s", no, none,"0.0", "0.0")
+    {
+	  value("", 2)
+	  value("j_No", 0)
+	  value("j_Yes", 0)
+          value("j_Organization", 0)
+    }
+    attribute("GRID_TEXT", "albl_Grid_Label_Text", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Task attributes                                                   */
+/***************************************************************************/
+task(0,"j_Task")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    unique_attribute("SCENARIO_UDANAME", "albl_Scenario", string,"%s", no, none,"0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("TASKTYPE_UDANAME", "albl_Task_Type", string,"%s", no, none,"0.0", "0.0")
+    {
+        value("", 0)
+    }
+    unique_attribute("CONTRACTOR_UDANAME", "albl_Contractor", string,"%s", no, none,"0.0", "0.0")
+    {
+        value("", 0)
+    }
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Pour Object Attributes                                                  */
+/***************************************************************************/
+pour_object(0,"j_Pour_Object")
+{
+  tab_page("","jd_Parameters",4)
+  {
+    attribute("COMMENT", "j_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Pour Unit Attributes                                                  */
+/***************************************************************************/
+pour_unit(0,"j_Pour_unit")
+{
+  tab_page("","jd_Parameters",4)
+  {
+    attribute("COMMENT", "j_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+  }
+
+  modify(1)
+}
+
+
+/***************************************************************************/
+/* Pour Break Attributes                                                   */
+/***************************************************************************/
+pour_break(0,"j_Pour_Break")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("COMMENT", "j_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }    
+	attribute("BREAK_TYPE", "j_Pour_break_type", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+  }
+  modify(1)
+}
+
+/***************************************************************************/
+/* Item (BREP) attributes                                                  */
+/***************************************************************************/
+item(0,"j_Item")
+{
+ tab_page("Parameters","jd_Parameters",4)
+ modify(1)
+}
+
+/***************************************************************************/
+/* Concrete item (BREP) attributes                                         */
+/***************************************************************************/
+concrete_item(0,"j_Concrete_Item")
+{
+ modify(1)
+}
+
+/***************************************************************************/
+/* Surface Object Attributes                                                   */
+/***************************************************************************/
+surface_object(0,"j_Surface_Object")
+{
+  tab_page("","jd_Parameters",3)
+  {
+    attribute("COMMENT", "j_comment", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_1", "j_user_field_1", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_2", "j_user_field_2", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_3", "j_user_field_3", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+    attribute("USER_FIELD_4", "j_user_field_4", string, "%s", no, none, "0.0", "0.0")
+    {
+        value("", 0)
+    }
+  }
+  modify(1)
+}

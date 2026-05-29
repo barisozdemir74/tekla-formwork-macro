@@ -1,0 +1,1822 @@
+{
+  "Uuid": "00215947-e3f4-4a06-959b-ab4b5e5c2862",
+  "IsCustomNode": false,
+  "Description": "",
+  "Name": "FormworkArea_m²",
+  "ElementResolver": {
+    "ResolutionMap": {
+      "Function.Identity": {
+        "Key": "Function",
+        "Value": "FunctionObject.ds"
+      }
+    }
+  },
+  "Inputs": [],
+  "Outputs": [],
+  "Nodes": [
+    {
+      "ConcreteType": "PythonNodeModels.PythonNode, PythonNodeModels",
+      "Code": "# -*- coding: utf-8 -*-\r\n# Revit 2025/2026 – Dynamo CPython3\r\n# Formwork alan hesabı + parametre yaz + hesaplanan yüzeyleri boya\r\n#\r\n# ═══════════════════════════════════════════════════════════════\r\n# INPUTS:\r\n#   IN[0] : Elemanlar (liste veya tek eleman). None ise aktif seçim kullanılır.\r\n#   IN[1] : do_paint (bool, default=True)  – elemanları kırmızı override ile işaretle\r\n#   IN[2] : use_selection (bool, default=False) – True ise Revit aktif seçimini kullan\r\n#   IN[3] : grid_tol_m (float, default=0.09) – aks toleransı (metre)\r\n#   IN[4] : slab_on_grade_elevation_m (float, default=None)\r\n#             Bu kotun ±0.50m içindeki Floors → radye sayılır (alt yüzey hariç).\r\n#             None verilirse kot kontrolü devre dışı.\r\n#   IN[5] : slab_keywords (list[str] veya str, default=[])\r\n#             Tip/aile adı eşleşen Floors → radye sayılır.\r\n#             Örn: [\"Radye\", \"Slab on Grade\", \"Foundation Slab\"]\r\n#   IN[6] : do_subtract (bool, default=False)\r\n#             True → Revit JOIN tablosundaki komşu elemanların kesişimi çıkarılır.\r\n#             Touching-but-not-joined / linked model / IFC kapsam dışı.\r\n#             Büyük modellerde yavaşlayabilir. Varsayılan: False.\r\n#\r\n# KURALLAR:\r\n#   Structural Columns        : YAN\r\n#   Structural Framing (kiriş): YAN + ALT\r\n#   Floors (döşeme)           : YAN + ALT\r\n#   Floors (radye / zemin)    : SADECE YAN  ← IN[4] veya IN[5] ile tespit\r\n#   Walls                     : YAN (tüm dikey yüzeyler)\r\n#   Structural Foundations    : SADECE YAN (ALT YOK)\r\n#\r\n# ═══════════════════════════════════════════════════════════════\r\n# PRODUCTION'A GEÇMEDEN ÖNCE — ZORUNLU KONTROLLER:\r\n#\r\n#   [ ] Shared Parameters doğru category binding'e atanmış\r\n#   [ ] Schedule fields (Formwork_m², FW_L, FW_W, FW_H, FW_Level,\r\n#       FW_Grid, FW_ElemId) manuel olarak Schedule'a eklenmiş\r\n#   [ ] Project Units: m² ve metre olarak ayarlı\r\n#   [ ] IFC / DirectShape elemanlarla test çalıştırıldı\r\n#   [ ] 5–10 gerçek perde manuel doğrulaması yapıldı\r\n#   [ ] do_subtract=False (default) bırakıldı  ← kritik\r\n#   [ ] Büyük projede override performansı test edildi\r\n#\r\n# PRODUCTION NOTLARI:\r\n#   do_subtract=False bırak:\r\n#     Subtraction motoru topology-aware değil, multi-solid güvenilir değil,\r\n#     linked model anlamıyor, bazı IFC'lerde boolean bozabiliyor.\r\n#     Native temiz Revit RC modelde deneysel açılabilir ama\r\n#     production default'u kesinlikle FALSE olmalı.\r\n#\r\n#   WALL(all_v) nedeniyle perde metrajını elle spot-check yap:\r\n#     Kolon / kiriş / temel → oldukça güvenilir\r\n#     Perde / duvar         → kontrollü kullanım, birkaç örnek doğrula\r\n#\r\n# GERÇEK KONUM:\r\n#   \"production helper tool\"\r\n#   Günlük kullanım, hızlı metraj, model kontrolü, formwork sanity-check,\r\n#   IFC ön kontrol, saha yaklaşımı için yeterince olgunlaşmış.\r\n#   Tam topology metraj motoru değil — ciddi iş gören mühendislik aracı.\r\n# ═══════════════════════════════════════════════════════════════\r\n#   hobby script                  : GEÇTİ\r\n#   usable engineering tool       : EVET\r\n#   production helper             : EVET\r\n#   tam profesyonel metraj motoru : HAYIR\r\n#   topology-aware engine         : HAYIR\r\n#\r\n# DOĞRULUK (gerçek saha tahmini):\r\n#   Kolon                                    : %94–98\r\n#   Kiriş                                    : %92–96\r\n#   Temel                                    : %90–96\r\n#   Döşeme / radye                           : %88–93\r\n#   Duvar — düz, tekil                       : %82–90\r\n#   Duvar — L/U/T                            : %65–82  ← review zorunlu\r\n#   Curved wall                              : %50–75  ← riskli\r\n#   IFC segmented wall                       : %55–80  ← riskli\r\n#\r\n# GÜÇLÜ YANLAR:\r\n#   + DirectShape / IFC: Volume=0 solid + Mesh fallback\r\n#   + GeometryInstance recursive traversal + GetSymbolGeometry fallback\r\n#   + Category resolver: BIC int + Category.Name çift doğrulama\r\n#   + Slab-on-grade tespiti: kot + anahtar kelime\r\n#   + BBox fallback: kategori bazlı ayrı formüller\r\n#   + Join subtraction: JoinGeometryUtils tabanlı, opsiyonel\r\n#   + Face bazlı Paint (kalıp yüzeyi), Mesh/DS'de Override fallback\r\n#   + Confidence scoring + explainable reasons + auto review_list\r\n#   + Açık limitasyon belgesi\r\n#\r\n# EN DOĞRU KULLANIM (bu script neye uyar):\r\n#   ✓ Hızlı formwork sanity-check\r\n#   ✓ IFC QA ve ön metraj\r\n#   ✓ Saha yaklaşım metrajı\r\n#   ✓ Model kontrolü / quantity trend\r\n#   ✓ Schedule automation (OUT[7] confidence, OUT[8] review)\r\n#   ✗ Nihai hakediş / ihale metrajı\r\n#   ✗ Topology-dependent kesin alan\r\n#\r\n# PRODUCTION WORKFLOW TAVSİYESİ:\r\n#   1. do_subtract=False bırak (default) — boolean riski, IFC'de tehlikeli\r\n#   2. Kolon / Kiriş / Temel → güvenilir, direkt kullanılabilir\r\n#   3. Duvar / Perde       → review_list (OUT[8]) schedule'a bağla,\r\n#                            manuel spot-check zorunlu\r\n#   4. conf < 0.55 elemanlar → REVIEW etiketli, elle doğrula\r\n#   5. IFC büyük model (10k+) → use_selection=True ile parça parça çalıştır\r\n#\r\n# ───────────────────────────────────────────────────────────────\r\n# AÇIK LİMİTASYONLAR:\r\n#\r\n# [LIM-1] SUBTRACTION KISMİ — yardımcı özellik, true topology değil\r\n#   do_subtract=True yalnızca JoinGeometryUtils.GetJoinedElements\r\n#   kapsamındaki elemanları çıkarır. KAPSAM DIŞI:\r\n#     - touching but not joined\r\n#     - linked model intersection\r\n#     - IFC implicit intersection\r\n#     - nested family clash\r\n#     - multi-solid interaction (_get_primary_solid sadece en büyük solid)\r\n#     - opening-host interaction\r\n#   Boolean difference invalid/non-manifold solid üretebilir;\r\n#   _solid_has_faces kısmen yakalar ama geometry bozuksa bile\r\n#   face var gibi görünebilir (IFC'de risk yüksek).\r\n#   Gerçek sapma: %5–15, yoğun birleşimli projelerde daha fazla.\r\n#\r\n# [LIM-2] WALL = ALL_VERTICAL_FACES — en büyük hata kaynağı\r\n#   Tüm dikey yüzeyler toplanır → her zaman \"upper bound\" verir.\r\n#   Reveal, niche, opening jamb, join artifact, stacked wall seam,\r\n#   IFC triangulation noise, curved wall segment faces dahil.\r\n#   Senaryo bazlı risk:\r\n#     düz perde / basit duvar      : iyi\r\n#     L/U/T duvar                  : orta\r\n#     opening-yoğun perde          : kötü\r\n#     IFC segmented wall           : kötü\r\n#     curved wall                  : riskli\r\n#   Coplanar clustering denendi, kaldırıldı:\r\n#     plane grouping ≠ shell reconstruction —\r\n#     disconnected island aynı gruba düşer, bazı senaryolarda\r\n#     ALL_VERTICAL_FACES'ten kötü sonuç veriyordu.\r\n#   Gerçek çözüm: face connectivity graph + shell continuity +\r\n#   opening-host intelligence → topology engine, kapsam dışı.\r\n#\r\n# [LIM-3] OVERRIDE-ONLY BOYAMA\r\n#   Tüm eleman renklendirilir, yalnızca kalıp yüzleri değil.\r\n#   \"Element visualization\", \"face visualization\" değil.\r\n#\r\n# [LIM-4] BBOX FALLBACK — eğimli elemanlarda büyütür\r\n#   Geometry gelmezse BBox fallback devreye girer.\r\n#   Eğimli elemanlarda BBox gerçek geometriyi büyütür.\r\n#   \"WARN:sloped_bbox_overestimate\" ile işaretlenir.\r\n#\r\n# [LIM-5] FLOOR EDGE ŞİŞMESİ\r\n#   Eğimli döşemede kenar alanı şişebilir.\r\n#   BBox tahmininin %150'sini aşarsa \"WARN:edge_inflated\" eklenir.\r\n#\r\n# [LIM-6] TOPOLOGY YOK — sonraki büyük adım\r\n#   Bu scriptte bulunmayan sistemler:\r\n#     - face connectivity graph (shared edge kontrolü)\r\n#     - shell continuity / reconstruction\r\n#     - host opening intelligence (pencere/kapı/shaft semantic)\r\n#     - topology cleanup / manifold repair\r\n#     - adjacency graph / void propagation\r\n#   Bu script: \"geometry harvesting + rule-based area\" seviyesindedir.\r\n#   Kesin ihale/hakediş metrajı için elle doğrulama gerekir.\r\n#\r\n# ───────────────────────────────────────────────────────────────\r\n# MEVCUT SEVİYE:\r\n#   Hobby script                   : geçti\r\n#   Engineering helper             : geçti\r\n#   Production helper              : güçlü şekilde geçti\r\n#   QA-assisted metraj tool        : EVET\r\n#   Auditable engineering tool     : EVET\r\n#   Topology engine                : HAYIR\r\n#   Contract-grade quantity engine : HAYIR\r\n#\r\n#   Katman bazlı durum:\r\n#     Geometry harvesting       : güçlü\r\n#     Rule-based classification : güçlü\r\n#     IFC tolerance             : iyi\r\n#     QA explainability         : iyi   ← confidence + reasons + review_list\r\n#     Semantic understanding    : sınırlı\r\n#     Topology reconstruction   : yok\r\n#\r\n# SONRAKİ AŞAMA — KOD BÜYÜTME DEĞİL, STABİLİZASYON:\r\n#   Daha fazla fallback/heuristic/if-else kodu şişirir,\r\n#   topology eksikliğini gidermez.\r\n#   Sonraki büyük sıçrama topology engine — Dynamo script değil,\r\n#   ayrı geometri motoru gerektirir.\r\n#\r\n#   Öncelik sırası:\r\n#     [ ] Yüksek: 20+ gerçek proje testi\r\n#     [ ] Yüksek: IFC varyasyon testi (Tekla, Navis, Archicad)\r\n#     [ ] Yüksek: Edge-case arşivi (beklenen/sonuç/sapma tablosu)\r\n#     [ ] Yüksek: OUT[8] review_list ile QA review workflow\r\n#     [ ] Orta:   Performans benchmark (5k–15k eleman)\r\n#     [ ] Orta:   Karmaşık perde spot-check (L/U/curved/opening)\r\n#     [ ] Orta:   Regression test seti\r\n#     [ ] Düşük:  Yeni heuristic ekleme\r\n# ═══════════════════════════════════════════════════════════════\r\n\r\nimport clr\r\nimport math\r\n\r\nclr.AddReference(\"RevitAPI\")\r\nfrom Autodesk.Revit.DB import (\r\n    FilteredElementCollector, Grid, Options, ViewDetailLevel,\r\n    GeometryInstance, Solid, Mesh, Face, XYZ, UV, ElementId,\r\n    Material, FillPatternElement, OverrideGraphicSettings, Color,\r\n    BuiltInCategory, BuiltInParameter, StorageType, Element,\r\n    UnitUtils, ForgeTypeId, SolidUtils, BooleanOperationsType,\r\n    BooleanOperationsUtils, Transform\r\n)\r\n\r\nclr.AddReference(\"RevitServices\")\r\nfrom RevitServices.Persistence import DocumentManager\r\nfrom RevitServices.Transactions import TransactionManager\r\n\r\nclr.AddReference(\"RevitNodes\")\r\nimport Revit\r\nclr.ImportExtensions(Revit.Elements)\r\n\r\nclr.AddReference(\"RevitAPIUI\")\r\nfrom Autodesk.Revit.UI import UIApplication\r\n\r\ndoc = DocumentManager.Instance.CurrentDBDocument\r\nuiapp = DocumentManager.Instance.CurrentUIApplication\r\nuidoc = uiapp.ActiveUIDocument\r\n\r\n# ─────────────────────────── INPUTS ────────────────────────────\r\ndef _bool_safe(val, default=True):\r\n    \"\"\"'False' string dahil güvenli bool dönüşümü.\"\"\"\r\n    if val is None:\r\n        return default\r\n    if isinstance(val, bool):\r\n        return val\r\n    if isinstance(val, str):\r\n        return val.strip().lower() not in (\"false\", \"0\", \"no\", \"hayir\", \"hayır\")\r\n    return bool(val)\r\n\r\ndef _float_safe(val, default):\r\n    try:\r\n        return float(str(val).replace(\",\", \".\"))\r\n    except:\r\n        return default\r\n\r\n# ─────────────────── BİRİM SABİTLERİ ───────────────────────────\r\nFT2_TO_M2          = 0.09290304\r\nFT_TO_M            = 0.3048\r\nM_TO_FT            = 1.0 / FT_TO_M\r\nNORMAL_Z_THRESHOLD = 0.6\r\n\r\n# ─────────────────── PARAMETRE İSİMLERİ ────────────────────────\r\nFORMWORK_PARAM_NAMES = [\"Formwork_m²\", \"Formwork_m2\", \"Formwork_m2 \"]\r\nELEMID_PARAM_NAMES   = [\"FW_ElemId\"]\r\nGRID_PARAM_NAMES     = [\"FW_Grid\"]\r\nLEVEL_PARAM_NAMES    = [\"FW_Level\"]\r\nLENX_PARAM_NAMES     = [\"FW_L\"]\r\nLENY_PARAM_NAMES     = [\"FW_W\"]\r\nLENZ_PARAM_NAMES     = [\"FW_H\"]\r\n\r\n# ─────────────────────────── INPUTS ────────────────────────────\r\nelems_in      = IN[0] if len(IN) > 0 else None\r\ndo_paint      = _bool_safe(IN[1] if len(IN) > 1 else None, default=True)\r\nuse_selection = _bool_safe(IN[2] if len(IN) > 2 else None, default=False)\r\ngrid_tol_m    = _float_safe(IN[3] if len(IN) > 3 else None, default=0.09)\r\nGRID_TOL_FT   = grid_tol_m * M_TO_FT\r\n\r\n# Radye / zemin döşemesi tespiti\r\n_sog_raw = IN[4] if len(IN) > 4 else None\r\nSLAB_ON_GRADE_ELEV_M  = _float_safe(_sog_raw, default=None) if _sog_raw is not None else None\r\nSLAB_ON_GRADE_ELEV_FT = (SLAB_ON_GRADE_ELEV_M * M_TO_FT) if SLAB_ON_GRADE_ELEV_M is not None else None\r\nSLAB_ELEV_TOL_FT      = 0.5 * M_TO_FT  # ±0.50 m tolerans\r\n\r\n_kw_raw = IN[5] if len(IN) > 5 else None\r\nif _kw_raw is None:\r\n    SLAB_KEYWORDS = []\r\nelif isinstance(_kw_raw, str):\r\n    SLAB_KEYWORDS = [k.strip() for k in _kw_raw.split(\",\") if k.strip()]\r\nelif isinstance(_kw_raw, list):\r\n    SLAB_KEYWORDS = [str(k).strip() for k in _kw_raw if str(k).strip()]\r\nelse:\r\n    SLAB_KEYWORDS = []\r\nSLAB_KEYWORDS_LOWER = [k.lower() for k in SLAB_KEYWORDS]\r\n\r\n# IN[6]: do_subtract — join subtraction motoru\r\n# True  → join edilmiş komşu elemanların kesişimi çıkarılır ([LIM-1] kısmi çözüm)\r\n# False → subtraction yok, ham geometry kullanılır (varsayılan — daha hızlı)\r\n# NOT: Subtraction Boolean işlem gerektirir, büyük modellerde yavaşlayabilir.\r\n#      Linked model ve multi-join durumları kapsam dışındadır.\r\ndo_subtract = _bool_safe(IN[6] if len(IN) > 6 else None, default=False)\r\n\r\nMAT_NAME  = \"FW_FORMWORK_FACE_COLOR\"\r\nMAT_COLOR = Color(220, 30, 30)\r\n\r\n# Gridleri bir kere topla\r\nGRIDS = list(FilteredElementCollector(doc).OfClass(Grid).ToElements())\r\n\r\n# ─────────────────────── YARDIMCI ──────────────────────────────\r\ndef unwrap(x):\r\n    try:\r\n        return UnwrapElement(x)\r\n    except:\r\n        return x\r\n\r\ndef eid_str(el):\r\n    \"\"\"ElementId değerini string olarak döndür (taşma riski yok).\"\"\"\r\n    try:\r\n        return str(el.Id.Value)\r\n    except:\r\n        try:\r\n            return str(el.Id.IntegerValue)\r\n        except:\r\n            return \"\"\r\n\r\ndef eid_int(el):\r\n    \"\"\"ElementId'yi int olarak döndür.\"\"\"\r\n    try:\r\n        return int(el.Id.Value)\r\n    except:\r\n        try:\r\n            return int(el.Id.IntegerValue)\r\n        except:\r\n            return None\r\n\r\ndef cat_bic(el):\r\n    \"\"\"Elemanın BuiltInCategory int değerini döndür.\"\"\"\r\n    try:\r\n        c = el.Category\r\n        if c is None:\r\n            return None\r\n        try:\r\n            return int(c.Id.Value)\r\n        except:\r\n            return int(c.Id.IntegerValue)\r\n    except:\r\n        return None\r\n\r\ndef find_param(el, names):\r\n    for n in names:\r\n        try:\r\n            p = el.LookupParameter(n)\r\n        except:\r\n            p = None\r\n        if p:\r\n            return p, n\r\n    return None, None\r\n\r\ndef _internal_length(m_value):\r\n    \"\"\"Metre → Revit iç birim (ft). UnitUtils yoksa manuel dönüşüm.\"\"\"\r\n    try:\r\n        return UnitUtils.ConvertToInternalUnits(m_value, ForgeTypeId(\"autodesk.unit.unit:meters-1.0.1\"))\r\n    except:\r\n        try:\r\n            from Autodesk.Revit.DB import UnitTypeId\r\n            return UnitUtils.ConvertToInternalUnits(m_value, UnitTypeId.Meters)\r\n        except:\r\n            return m_value * M_TO_FT\r\n\r\ndef set_param(p, str_val, int_val=None, double_internal=None):\r\n    \"\"\"Parametreyi StorageType'a göre yazar.\"\"\"\r\n    if p is None:\r\n        return False, \"param None\"\r\n    try:\r\n        st = p.StorageType\r\n        if st == StorageType.String:\r\n            p.Set(\"\" if str_val is None else str(str_val))\r\n            return True, \"\"\r\n        elif st == StorageType.Integer:\r\n            v = int_val if int_val is not None else 0\r\n            try:\r\n                v = int(str(str_val))\r\n            except:\r\n                pass\r\n            p.Set(int(v))\r\n            return True, \"\"\r\n        elif st == StorageType.Double:\r\n            if double_internal is None:\r\n                try:\r\n                    double_internal = float(str(str_val).replace(\",\", \".\"))\r\n                except:\r\n                    double_internal = 0.0\r\n            p.Set(float(double_internal))\r\n            return True, \"\"\r\n        else:\r\n            p.SetValueString(\"\" if str_val is None else str(str_val))\r\n            return True, \"SetValueString\"\r\n    except Exception as ex:\r\n        return False, str(ex)\r\n\r\ndef fmt_m2(v, decimals=2, comma=True):\r\n    try:\r\n        s = \"{:.{}f}\".format(float(v), decimals)\r\n        return s.replace(\".\", \",\") if comma else s\r\n    except:\r\n        return \"\"\r\n\r\ndef bbox_sizes(el):\r\n    \"\"\"BoundingBox'tan (Lx_m, Ly_m, Lz_m, Lx_ft, Ly_ft, Lz_ft) döndür.\"\"\"\r\n    try:\r\n        bb = el.get_BoundingBox(None)\r\n    except:\r\n        bb = None\r\n    if not bb:\r\n        return (0.0,)*6\r\n    dx = abs(bb.Max.X - bb.Min.X)\r\n    dy = abs(bb.Max.Y - bb.Min.Y)\r\n    dz = abs(bb.Max.Z - bb.Min.Z)\r\n    return (\r\n        round(dx * FT_TO_M, 3),\r\n        round(dy * FT_TO_M, 3),\r\n        round(dz * FT_TO_M, 3),\r\n        dx, dy, dz\r\n    )\r\n\r\ndef bbox_center_pt(el):\r\n    \"\"\"BoundingBox merkez noktasını XYZ olarak döndür (fallback).\"\"\"\r\n    try:\r\n        bb = el.get_BoundingBox(None)\r\n        if bb:\r\n            return XYZ(\r\n                (bb.Min.X + bb.Max.X) * 0.5,\r\n                (bb.Min.Y + bb.Max.Y) * 0.5,\r\n                (bb.Min.Z + bb.Max.Z) * 0.5\r\n            )\r\n    except:\r\n        pass\r\n    return None\r\n\r\ndef level_name(el):\r\n    lvl = None\r\n    try:\r\n        lid = getattr(el, \"LevelId\", None)\r\n        if isinstance(lid, ElementId) and lid != ElementId.InvalidElementId:\r\n            lvl = doc.GetElement(lid)\r\n    except:\r\n        pass\r\n    if not lvl:\r\n        for bip in [\r\n            BuiltInParameter.LEVEL_PARAM,\r\n            BuiltInParameter.FAMILY_LEVEL_PARAM,\r\n            BuiltInParameter.SCHEDULE_LEVEL_PARAM,\r\n            BuiltInParameter.WALL_BASE_CONSTRAINT\r\n        ]:\r\n            try:\r\n                p = el.get_Parameter(bip)\r\n                if p:\r\n                    eid = p.AsElementId()\r\n                    if eid and eid != ElementId.InvalidElementId:\r\n                        lvl = doc.GetElement(eid)\r\n                        if lvl:\r\n                            break\r\n            except:\r\n                pass\r\n    try:\r\n        return lvl.Name if lvl else \"\"\r\n    except:\r\n        return \"\"\r\n\r\ndef near_grids(el):\r\n    \"\"\"\r\n    Elemana yakın aksları bulur.\r\n    Önce LocationPoint/LocationCurve, bulunamazsa BoundingBox merkezi kullanır.\r\n    \"\"\"\r\n    pts = []\r\n    try:\r\n        loc = el.Location\r\n        if loc is not None:\r\n            from Autodesk.Revit.DB import LocationPoint, LocationCurve\r\n            if isinstance(loc, LocationPoint):\r\n                pts.append(loc.Point)\r\n            elif isinstance(loc, LocationCurve):\r\n                crv = loc.Curve\r\n                if crv:\r\n                    pts.append(crv.Evaluate(0.5, True))\r\n    except:\r\n        pass\r\n\r\n    # Fallback: BoundingBox merkezi\r\n    if not pts:\r\n        cpt = bbox_center_pt(el)\r\n        if cpt:\r\n            pts.append(cpt)\r\n\r\n    if not pts or not GRIDS:\r\n        return \"\"\r\n\r\n    names = set()\r\n    for g in GRIDS:\r\n        try:\r\n            gc = g.Curve\r\n        except:\r\n            gc = None\r\n        if not gc:\r\n            continue\r\n        for pt in pts:\r\n            try:\r\n                proj = gc.Project(pt)\r\n            except:\r\n                proj = None\r\n            if proj is None:\r\n                continue\r\n            try:\r\n                d = proj.Distance\r\n            except:\r\n                d = None\r\n            if d is None:\r\n                continue\r\n            if d <= GRID_TOL_FT:\r\n                try:\r\n                    names.add(g.Name)\r\n                except:\r\n                    pass\r\n    return \", \".join(sorted(names)) if names else \"\"\r\n\r\n# ─────────────── GEOMETRİ (Solid + Mesh, recursive) ───────────\r\ndef _solid_has_faces(solid):\r\n    \"\"\"Solid'in işlenebilir face'i var mı? Volume=0 DirectShape için kritik.\"\"\"\r\n    try:\r\n        faces = solid.Faces\r\n        if faces is None:\r\n            return False\r\n        # FaceArray boyutunu say\r\n        count = 0\r\n        for _ in faces:\r\n            count += 1\r\n            if count > 0:\r\n                return True\r\n        return False\r\n    except:\r\n        return False\r\n\r\n_MAX_WALK_DEPTH = 8  # Sonsuz nested instance döngüsüne karşı koruma\r\n\r\ndef collect_geom_objects(el):\r\n    opt = Options()\r\n    opt.ComputeReferences = True\r\n    opt.IncludeNonVisibleObjects = True\r\n    opt.DetailLevel = ViewDetailLevel.Fine\r\n    try:\r\n        geo = el.get_Geometry(opt)\r\n    except:\r\n        geo = None\r\n    out = []\r\n    if geo is None:\r\n        return out\r\n\r\n    def walk(g, depth=0):\r\n        if g is None or depth > _MAX_WALK_DEPTH:\r\n            return\r\n        if isinstance(g, GeometryInstance):\r\n            before = len(out)\r\n            try:\r\n                inst = g.GetInstanceGeometry()\r\n                if inst:\r\n                    for gg in inst:\r\n                        walk(gg, depth + 1)\r\n            except:\r\n                pass\r\n            # Instance hiç solid/mesh üretmediyse symbol geometry dene\r\n            # (import-family / DirectShape Volume=0 durumu)\r\n            if len(out) == before:\r\n                try:\r\n                    sym = g.GetSymbolGeometry()\r\n                    if sym:\r\n                        for gg in sym:\r\n                            walk(gg, depth + 1)\r\n                except:\r\n                    pass\r\n\r\n        elif isinstance(g, Solid):\r\n            # Volume=0 olsa bile face'leri olan solid'i işle (DirectShape)\r\n            if _solid_has_faces(g):\r\n                out.append(g)\r\n\r\n        elif isinstance(g, Mesh):\r\n            if g.NumTriangles > 0:\r\n                out.append(g)\r\n\r\n        else:\r\n            # GeometryElement veya bilinmeyen nested tip\r\n            try:\r\n                for gg in g:\r\n                    walk(gg, depth + 1)\r\n            except:\r\n                pass\r\n\r\n    for obj in geo:\r\n        walk(obj)\r\n    return out\r\n\r\ndef tri_area_normal(p0, p1, p2):\r\n    v1 = p1 - p0\r\n    v2 = p2 - p0\r\n    cr = v1.CrossProduct(v2)\r\n    mag = cr.GetLength()\r\n    if mag < 1e-12:\r\n        return 0.0, None\r\n    n = XYZ(cr.X / mag, cr.Y / mag, cr.Z / mag)\r\n    return 0.5 * mag, n  # ft^2\r\n\r\n# ─────────────── JOIN SUBTRACTION MOTORU ──────────────────────\r\n# [LIM-1] için kısmi çözüm.\r\n# Tam çözüm değil — sadece doğrudan join edilmiş komşuların\r\n# kesişim hacmini çıkarır. Linked model ve karmaşık multi-join\r\n# durumları kapsam dışıdır.\r\n\r\ndef _get_joined_element_ids(el):\r\n    \"\"\"Revit'te bu elemana join edilmiş element ID'lerini döndürür.\"\"\"\r\n    try:\r\n        from Autodesk.Revit.DB import JoinGeometryUtils\r\n        joined_ids = JoinGeometryUtils.GetJoinedElements(doc, el)\r\n        return list(joined_ids) if joined_ids else []\r\n    except:\r\n        return []\r\n\r\ndef _get_primary_solid(el):\r\n    \"\"\"\r\n    Elemanın en büyük solid'ini döndürür (Volume bazlı).\r\n    Volume=0 solid'lerde face area toplamına geçer.\r\n    Hiç solid yoksa None döner.\r\n\r\n    RİSK: Multi-solid family / precast assembly / complex foundation\r\n    durumlarında yalnızca en büyük parça kullanılır. Küçük ama\r\n    önemli parçalar subtract edilmeden kalır. [LIM-1] kapsamında.\r\n    \"\"\"\r\n    best = None\r\n    best_score = -1.0\r\n    for obj in collect_geom_objects(el):\r\n        if not isinstance(obj, Solid):\r\n            continue\r\n        score = 0.0\r\n        try:\r\n            score = float(obj.Volume)\r\n        except:\r\n            pass\r\n        if score < 1e-9:\r\n            # Volume=0 (DirectShape vb.) → face area toplamı\r\n            try:\r\n                score = sum(float(f.Area) for f in obj.Faces)\r\n            except:\r\n                score = 0.0\r\n        if score > best_score:\r\n            best_score = score\r\n            best = obj\r\n    return best\r\n\r\ndef _solid_intersection_volume(solid_a, solid_b):\r\n    \"\"\"\r\n    İki solid'in kesişim hacmini ft³ olarak döndürür.\r\n    Başarısız olursa 0.0 döner (subtract işlemi atlanır).\r\n    \"\"\"\r\n    try:\r\n        intersection = BooleanOperationsUtils.ExecuteBooleanOperation(\r\n            solid_a, solid_b, BooleanOperationsType.Intersect\r\n        )\r\n        if intersection is not None:\r\n            return max(0.0, float(intersection.Volume))\r\n    except:\r\n        pass\r\n    return 0.0\r\n\r\ndef _subtract_joined_solids(el, primary_solid):\r\n    \"\"\"\r\n    Birincil solid'den join edilmiş komşu elemanların kesişimini çıkarır.\r\n    Döndürür: (net_solid, subtracted_count, subtraction_notes)\r\n\r\n    KAPSAM: Yalnızca JoinGeometryUtils.GetJoinedElements listesi.\r\n    KAPSAM DIŞI: touching-but-not-joined, linked model, IFC implicit\r\n    intersection, nested family clash, multi-solid interaction.\r\n\r\n    RİSK: Boolean difference bazen invalid/non-manifold solid üretir.\r\n    _solid_has_faces ile kısmen kontrol edilir ama geometry bozuk olsa\r\n    da face var gibi görünebilir. Karmaşık IFC modellerinde dikkat.\r\n    Hata durumunda primary_solid korunur (güvenli fallback).\r\n    \"\"\"\r\n    if primary_solid is None:\r\n        return None, 0, []\r\n\r\n    joined_ids = _get_joined_element_ids(el)\r\n    if not joined_ids:\r\n        return primary_solid, 0, []\r\n\r\n    net_solid = primary_solid\r\n    ok_count  = 0\r\n    notes     = []\r\n\r\n    for jid in joined_ids:\r\n        try:\r\n            jel = doc.GetElement(jid)\r\n            if jel is None:\r\n                continue\r\n            jsol = _get_primary_solid(jel)\r\n            if jsol is None:\r\n                continue\r\n\r\n            # Kesişim hacmi yoksa çıkarma gereksiz\r\n            iv = _solid_intersection_volume(net_solid, jsol)\r\n            if iv < 1e-9:\r\n                continue\r\n\r\n            # Boolean difference\r\n            result = BooleanOperationsUtils.ExecuteBooleanOperation(\r\n                net_solid, jsol, BooleanOperationsType.Difference\r\n            )\r\n            if result is not None and _solid_has_faces(result):\r\n                net_solid = result\r\n                ok_count += 1\r\n                notes.append(\"sub:Id{}(v={:.4f}ft3)\".format(\r\n                    str(jid.Value) if hasattr(jid, 'Value') else str(jid),\r\n                    iv\r\n                ))\r\n            else:\r\n                notes.append(\"sub_fail:Id{}\".format(\r\n                    str(jid.Value) if hasattr(jid, 'Value') else str(jid)\r\n                ))\r\n        except Exception as ex:\r\n            notes.append(\"sub_ex:{}\".format(str(ex)[:60]))\r\n\r\n    return net_solid, ok_count, notes\r\n\r\ndef _safe_area(face):\r\n    try:\r\n        return float(face.Area)\r\n    except:\r\n        return 0.0\r\n\r\ndef _classify_solid_faces(solid, v_a, t_a, b_a, v_faces, b_faces, t_faces):\r\n    \"\"\"Tek bir solid'in face'lerini sınıflandırır. In-place günceller.\"\"\"\r\n    try:\r\n        for face in solid.Faces:\r\n            try:\r\n                a = float(face.Area)\r\n            except:\r\n                continue\r\n            if a < 1e-9:\r\n                continue\r\n            n = None\r\n            try:\r\n                bb = face.GetBoundingBox()\r\n                uv = UV((bb.Min.U + bb.Max.U)*0.5, (bb.Min.V + bb.Max.V)*0.5)\r\n                n = face.ComputeNormal(uv)\r\n            except:\r\n                pass\r\n            if n is None:\r\n                try:\r\n                    n = face.ComputeNormal(UV(0.0, 0.0))\r\n                except:\r\n                    pass\r\n            if n is None:\r\n                for u_off, v_off in [(0.1,0.1),(0.9,0.1),(0.1,0.9)]:\r\n                    try:\r\n                        n = face.ComputeNormal(UV(u_off, v_off))\r\n                        if n is not None:\r\n                            break\r\n                    except:\r\n                        pass\r\n            if n is None:\r\n                v_a += a; v_faces.append(face)\r\n                continue\r\n            if n.Z > NORMAL_Z_THRESHOLD:\r\n                t_a += a; t_faces.append(face)\r\n            elif n.Z < -NORMAL_Z_THRESHOLD:\r\n                b_a += a; b_faces.append(face)\r\n            else:\r\n                v_a += a; v_faces.append(face)\r\n    except:\r\n        pass\r\n    return v_a, t_a, b_a\r\n\r\ndef classify_areas(el):\r\n    \"\"\"\r\n    Yüzeyleri (v)ertical / (t)op / (b)ottom olarak ayırır.\r\n\r\n    do_subtract=True ise join edilmiş komşu elemanların kesişimi\r\n    önce primary solid'den çıkarılır, sonra face sınıflandırması yapılır.\r\n    Subtraction başarısız olursa ham geometry kullanılır (güvenli fallback).\r\n\r\n    Returns:\r\n      v_area_ft2, t_area_ft2, b_area_ft2,\r\n      v_faces, b_faces, t_faces,\r\n      mesh_counts (tri_v, tri_b, tri_t),\r\n      subtract_notes (list[str])\r\n    \"\"\"\r\n    v_a = t_a = b_a = 0.0\r\n    v_faces = []\r\n    b_faces = []\r\n    t_faces = []\r\n    tri_v = tri_b = tri_t = 0\r\n    subtract_notes = []\r\n\r\n    geom_objects = collect_geom_objects(el)\r\n\r\n    # ── JOIN SUBTRACTION ────────────────────────────────────────\r\n    if do_subtract:\r\n        # Primary solid'i bul\r\n        primary = _get_primary_solid(el)\r\n        if primary is not None:\r\n            net_solid, sub_count, sub_notes = _subtract_joined_solids(el, primary)\r\n            subtract_notes = sub_notes\r\n            if sub_count > 0:\r\n                # Subtraction başarılı → net solid'i kullan,\r\n                # diğer solid'leri (varsa) ham haliyle ekle\r\n                v_a, t_a, b_a = _classify_solid_faces(\r\n                    net_solid, v_a, t_a, b_a, v_faces, b_faces, t_faces\r\n                )\r\n                # Birincil olmayan diğer solid'ler (zaten küçük parçalar)\r\n                for obj in geom_objects:\r\n                    if isinstance(obj, Solid) and obj is not primary:\r\n                        v_a, t_a, b_a = _classify_solid_faces(\r\n                            obj, v_a, t_a, b_a, v_faces, b_faces, t_faces\r\n                        )\r\n                # Mesh'ler her zaman eklenir\r\n                for obj in geom_objects:\r\n                    if isinstance(obj, Mesh):\r\n                        try:\r\n                            for i in range(obj.NumTriangles):\r\n                                tri = obj.get_Triangle(i)\r\n                                a, n = tri_area_normal(\r\n                                    tri.get_Vertex(0), tri.get_Vertex(1), tri.get_Vertex(2)\r\n                                )\r\n                                if n is None or a <= 1e-12:\r\n                                    continue\r\n                                if n.Z > NORMAL_Z_THRESHOLD:\r\n                                    t_a += a; tri_t += 1\r\n                                elif n.Z < -NORMAL_Z_THRESHOLD:\r\n                                    b_a += a; tri_b += 1\r\n                                else:\r\n                                    v_a += a; tri_v += 1\r\n                        except:\r\n                            pass\r\n                return v_a, t_a, b_a, v_faces, b_faces, t_faces, \\\r\n                       (tri_v, tri_b, tri_t), subtract_notes\r\n            # Subtraction başarısız → aşağıdaki normal yola düş\r\n\r\n    # ── NORMAL YOL (subtraction yok veya başarısız) ─────────────\r\n    for obj in geom_objects:\r\n        if isinstance(obj, Solid):\r\n            v_a, t_a, b_a = _classify_solid_faces(\r\n                obj, v_a, t_a, b_a, v_faces, b_faces, t_faces\r\n            )\r\n        elif isinstance(obj, Mesh):\r\n            try:\r\n                for i in range(obj.NumTriangles):\r\n                    tri = obj.get_Triangle(i)\r\n                    a, n = tri_area_normal(\r\n                        tri.get_Vertex(0), tri.get_Vertex(1), tri.get_Vertex(2)\r\n                    )\r\n                    if n is None or a <= 1e-12:\r\n                        continue\r\n                    if n.Z > NORMAL_Z_THRESHOLD:\r\n                        t_a += a; tri_t += 1\r\n                    elif n.Z < -NORMAL_Z_THRESHOLD:\r\n                        b_a += a; tri_b += 1\r\n                    else:\r\n                        v_a += a; tri_v += 1\r\n            except:\r\n                pass\r\n\r\n    return v_a, t_a, b_a, v_faces, b_faces, t_faces, \\\r\n           (tri_v, tri_b, tri_t), subtract_notes\r\n\r\n# ─────────────────── BOYAMA / OVERRIDE ────────────────────────\r\n\r\ndef solid_fill_pattern_id():\r\n    try:\r\n        for fpe in FilteredElementCollector(doc).OfClass(FillPatternElement).ToElements():\r\n            try:\r\n                fp = fpe.GetFillPattern()\r\n                if fp and fp.IsSolidFill:\r\n                    return fpe.Id\r\n            except:\r\n                pass\r\n    except:\r\n        pass\r\n    return ElementId.InvalidElementId\r\n\r\ndef _is_sloped_element(el, v_faces, b_faces, t_faces):\r\n    \"\"\"\r\n    Elemanın eğimli olup olmadığını face normallerinden tespit eder.\r\n    BBox oran heuristiği kaldırıldı (kaba, normal elemanları yanlış işaretleyebilir).\r\n\r\n    Kural:\r\n      - Yan sayılan face'lerde |nZ| > 0.05  → eğimli (yan yüzün Z bileşeni var)\r\n      - Alt/üst face'lerde     |nZ| < 0.98  → eğimli (yatay yüzey tam yatay değil)\r\n    Geometry yoksa (face listesi boş) → False döner, sloped flag verilmez.\r\n    \"\"\"\r\n    for f in v_faces:\r\n        try:\r\n            bb = f.GetBoundingBox()\r\n            uv = UV((bb.Min.U + bb.Max.U)*0.5, (bb.Min.V + bb.Max.V)*0.5)\r\n            n  = f.ComputeNormal(uv)\r\n            if n and abs(n.Z) > 0.05:\r\n                return True\r\n        except:\r\n            pass\r\n    for f in b_faces + t_faces:\r\n        try:\r\n            bb = f.GetBoundingBox()\r\n            uv = UV((bb.Min.U + bb.Max.U)*0.5, (bb.Min.V + bb.Max.V)*0.5)\r\n            n  = f.ComputeNormal(uv)\r\n            if n and abs(n.Z) < 0.98:\r\n                return True\r\n        except:\r\n            pass\r\n    return False\r\n\r\ndef apply_override(el):\r\n    \"\"\"\r\n    Elemanı aktif view'da kırmızı override ile işaretler.\r\n\r\n    LIMITASYON: Bu yöntem tüm elemanı renklendirir, yalnızca\r\n    hesaba giren yüzeyleri değil. \"Element visualization\" dir,\r\n    \"face visualization\" değil. Performans ve Mesh/DirectShape\r\n    uyumu için tercih edilmiştir (doc.Paint() kaldırıldı).\r\n    \"\"\"\r\n    try:\r\n        v = doc.ActiveView\r\n        if v is None:\r\n            return False, \"NoActiveView\"\r\n        sfid = solid_fill_pattern_id()\r\n        ogs = OverrideGraphicSettings()\r\n        ogs.SetSurfaceForegroundPatternColor(MAT_COLOR)\r\n        if sfid != ElementId.InvalidElementId:\r\n            ogs.SetSurfaceForegroundPatternId(sfid)\r\n        ogs.SetProjectionLineColor(MAT_COLOR)\r\n        v.SetElementOverrides(el.Id, ogs)\r\n        return True, \"OverrideApplied\"\r\n    except Exception as ex:\r\n        return False, \"OverrideFail:{}\".format(ex)\r\n\r\n# ─────────────────── KATEGORİ TANIMLAMA ────────────────────────\r\n# BIC id + kategori adı çift kontrol.\r\n# int(BuiltInCategory.OST_*) CPython/Revit binding'ine göre tutarsız dönebilir;\r\n# kategori adı (BuiltInCategory enum'unun string temsili) daha kararlıdır.\r\n# Her kategori için (bic_int, ad_anahtar_kelimeleri) tuple listesi.\r\n\r\ndef _build_cat_map():\r\n    \"\"\"\r\n    { \"COLUMN\": (bic_int_or_None, [\"StructuralColumns\", ...]), ... }\r\n    BIC int'i başlangıçta bir kez hesapla; hata olursa None bırak.\r\n    \"\"\"\r\n    def safe_int(bic_enum):\r\n        try:\r\n            return int(bic_enum)\r\n        except:\r\n            return None\r\n\r\n    return {\r\n        \"COLUMN\":     (safe_int(BuiltInCategory.OST_StructuralColumns),\r\n                       [\"OST_StructuralColumns\", \"StructuralColumns\", \"Structural Columns\"]),\r\n        \"BEAM\":       (safe_int(BuiltInCategory.OST_StructuralFraming),\r\n                       [\"OST_StructuralFraming\", \"StructuralFraming\", \"Structural Framing\"]),\r\n        \"FLOOR\":      (safe_int(BuiltInCategory.OST_Floors),\r\n                       [\"OST_Floors\", \"Floors\"]),\r\n        \"WALL\":       (safe_int(BuiltInCategory.OST_Walls),\r\n                       [\"OST_Walls\", \"Walls\"]),\r\n        \"FOUNDATION\": (safe_int(BuiltInCategory.OST_StructuralFoundation),\r\n                       [\"OST_StructuralFoundation\", \"StructuralFoundation\",\r\n                        \"Structural Foundation\", \"Structural Foundations\"]),\r\n    }\r\n\r\n_CAT_MAP = _build_cat_map()\r\n\r\ndef resolve_category(el):\r\n    \"\"\"\r\n    Elemanın hangi kural kategorisine girdiğini döndürür.\r\n    Önce BIC int eşleşmesi, sonra kategori adı eşleşmesi denenir.\r\n    Döndürür: \"COLUMN\" | \"BEAM\" | \"FLOOR\" | \"WALL\" | \"FOUNDATION\" | \"UNKNOWN\"\r\n    \"\"\"\r\n    bic_val = cat_bic(el)          # int veya None\r\n\r\n    # Kategori adını güvenli al\r\n    cat_name = \"\"\r\n    try:\r\n        c = el.Category\r\n        if c is not None:\r\n            cat_name = str(c.Name) if c.Name else \"\"\r\n            # BuiltInCategory enum adını da dene (örn. \"OST_Walls\")\r\n            try:\r\n                bic_name = str(c.BuiltInCategory) if hasattr(c, \"BuiltInCategory\") else \"\"\r\n            except:\r\n                bic_name = \"\"\r\n        else:\r\n            bic_name = \"\"\r\n    except:\r\n        bic_name = \"\"\r\n\r\n    for key, (expected_int, name_variants) in _CAT_MAP.items():\r\n        # 1) BIC int eşleşmesi (None değilse ve -1 değilse)\r\n        if expected_int is not None and expected_int != -1 and bic_val == expected_int:\r\n            return key\r\n        # 2) Kategori adı eşleşmesi (büyük/küçük harf duyarsız)\r\n        cat_name_lower  = cat_name.lower()\r\n        bic_name_lower  = bic_name.lower()\r\n        for variant in name_variants:\r\n            v = variant.lower()\r\n            if v in cat_name_lower or v in bic_name_lower:\r\n                return key\r\n\r\n    return \"UNKNOWN\"\r\n\r\n# ─────────────── RADYE / ZEMİN DÖŞEMESİ TESPİTİ ───────────────\r\ndef _elem_bottom_elevation_ft(el):\r\n    \"\"\"Elemanın alt kotunu ft cinsinden döndürür. Başarısızsa None.\"\"\"\r\n    try:\r\n        bb = el.get_BoundingBox(None)\r\n        if bb:\r\n            return min(bb.Min.Z, bb.Max.Z)\r\n    except:\r\n        pass\r\n    return None\r\n\r\ndef _elem_type_name(el):\r\n    \"\"\"Tip adı + aile adını birleştirip küçük harfe çevirir.\"\"\"\r\n    parts = []\r\n    try:\r\n        t = doc.GetElement(el.GetTypeId())\r\n        if t:\r\n            try:\r\n                parts.append(str(t.Name))\r\n            except:\r\n                pass\r\n            try:\r\n                fn = t.get_Parameter(BuiltInParameter.ALL_MODEL_FAMILY_NAME)\r\n                if fn:\r\n                    parts.append(str(fn.AsString() or \"\"))\r\n            except:\r\n                pass\r\n    except:\r\n        pass\r\n    try:\r\n        parts.append(str(el.Name or \"\"))\r\n    except:\r\n        pass\r\n    return \" \".join(parts).lower()\r\n\r\ndef is_slab_on_grade(el):\r\n    \"\"\"\r\n    Floors kategorisindeki elemanın radye / zemin döşemesi olup olmadığını\r\n    iki yöntemle kontrol eder:\r\n      1) Tip/aile adında SLAB_KEYWORDS_LOWER'dan herhangi biri geçiyorsa → True\r\n      2) Elemanın alt kotu SLAB_ON_GRADE_ELEV_FT ± SLAB_ELEV_TOL_FT içindeyse → True\r\n    Her iki kontrol da devre dışıysa (keyword listesi boş, kot None) → False\r\n    \"\"\"\r\n    # 1) Anahtar kelime kontrolü\r\n    if SLAB_KEYWORDS_LOWER:\r\n        type_str = _elem_type_name(el)\r\n        for kw in SLAB_KEYWORDS_LOWER:\r\n            if kw in type_str:\r\n                return True, \"keyword:{}\".format(kw)\r\n\r\n    # 2) Kot kontrolü\r\n    if SLAB_ON_GRADE_ELEV_FT is not None:\r\n        bot = _elem_bottom_elevation_ft(el)\r\n        if bot is not None:\r\n            if abs(bot - SLAB_ON_GRADE_ELEV_FT) <= SLAB_ELEV_TOL_FT:\r\n                return True, \"elevation:{:.2f}m\".format(bot * FT_TO_M)\r\n\r\n    return False, \"\"\r\ndef bbox_fallback_area_ft2(el, cat_key):\r\n    \"\"\"\r\n    Solid/Mesh geometry sıfır geldiğinde BoundingBox boyutlarından\r\n    kurala uygun yüzey alanını hesaplar (ft²).\r\n\r\n    Eksen tanımı:\r\n      dx, dy → yatay boyutlar (plan kesiti)\r\n      dz     → düşey yükseklik\r\n\r\n    Kurallar:\r\n      COLUMN     : 4 yan yüzey = 2*(dx+dy)*dz\r\n      BEAM       : 2 yan yüzey + 1 alt yüzey\r\n                   uzun eksen = length = max(dx,dy), genişlik = width = min(dx,dy)\r\n                   = 2*(length*dz) + (length*width)\r\n      FLOOR      : sadece yan kenar kalıbı (döşeme kenar tahtası) + alt yüzey\r\n                   = 2*(dx+dy)*dz + dx*dy\r\n                   (Foundation slab gibi davranmıyorsa sadece alt: dx*dy\r\n                    — bu fonksiyon \"yan+alt\" döndürür; kurala göre üst çağıran seçer)\r\n      WALL       : iki yan yüzey (her duvarın iki kalıp yüzü vardır)\r\n                   duvarın uzun yüzü = max(dx*dz, dy*dz)\r\n                   = 2 * max(dx*dz, dy*dz)\r\n      FOUNDATION : sadece 4 yan yüzey (temel kenar kalıbı, alt yüzey yok)\r\n                   = 2*(dx+dy)*dz\r\n      FALLBACK   : 4 yan + alt = 2*(dx+dy)*dz + dx*dy\r\n    \"\"\"\r\n    Lx_m, Ly_m, Lz_m, dx, dy, dz = bbox_sizes(el)\r\n\r\n    if dx < 1e-6 and dy < 1e-6 and dz < 1e-6:\r\n        return 0.0, \"BBox_zero\"\r\n\r\n    if cat_key == \"COLUMN\":\r\n        area = 2.0 * (dx + dy) * dz\r\n        return area, \"BBox_COLUMN\"\r\n\r\n    elif cat_key == \"BEAM\":\r\n        # Kiriş yatay uzanır; uzun eksen length, kısa eksen width\r\n        width  = min(dx, dy)\r\n        length = max(dx, dy)\r\n        # 2 yan yüzey (length*dz her biri) + 1 alt yüzey (length*width)\r\n        area = 2.0 * (length * dz) + (length * width)\r\n        return area, \"BBox_BEAM\"\r\n\r\n    elif cat_key == \"FLOOR\":\r\n        # Radye kontrolü BBox fallback'te de geçerli\r\n        sog, sog_reason = is_slab_on_grade(el)\r\n        if sog:\r\n            area = 2.0 * (dx + dy) * dz\r\n            return area, \"BBox_FLOOR_SOG[{}]\".format(sog_reason)\r\n        else:\r\n            area = 2.0 * (dx + dy) * dz + dx * dy\r\n            return area, \"BBox_FLOOR\"\r\n\r\n    elif cat_key == \"WALL\":\r\n        # Duvar kalıbı her zaman iki yüz → 2 * büyük yüz alanı\r\n        # (duvarın ince yönü kalınlık, uzun yönü ve yüksekliği kalıp yüzü)\r\n        face_xz = dx * dz\r\n        face_yz = dy * dz\r\n        area = 2.0 * max(face_xz, face_yz)\r\n        return area, \"BBox_WALL\"\r\n\r\n    elif cat_key == \"FOUNDATION\":\r\n        # Temel kenar kalıbı: sadece 4 yan yüzey, alt yüzey yok\r\n        area = 2.0 * (dx + dy) * dz\r\n        return area, \"BBox_FOUNDATION\"\r\n\r\n    else:\r\n        area = 2.0 * (dx + dy) * dz + dx * dy\r\n        return area, \"BBox_FALLBACK\"\r\n\r\n# ─────────────────── BOYAMA FONKSİYONLARI ──────────────────────\r\n# Face bazlı Paint: sadece hesaba giren (kalıp yapılan) yüzeyleri boyar.\r\n# Solid face'lerde çalışır. Mesh/DirectShape/BBox fallback durumunda\r\n# paint başarısız olur → apply_override fallback devreye girer.\r\n\r\n_paint_material_cache = [None]  # modül seviyesi cache — her run'da bir kez oluşturulur\r\n\r\ndef _get_or_create_paint_material():\r\n    \"\"\"FW_FORMWORK_FACE_COLOR materyalini döndürür veya oluşturur.\"\"\"\r\n    if _paint_material_cache[0] is not None:\r\n        return _paint_material_cache[0]\r\n    try:\r\n        for m in FilteredElementCollector(doc).OfClass(Material).ToElements():\r\n            if (m.Name or \"\") == MAT_NAME:\r\n                _paint_material_cache[0] = m\r\n                return m\r\n        mid = Material.Create(doc, MAT_NAME)\r\n        m = doc.GetElement(mid)\r\n        try:\r\n            m.Color = MAT_COLOR\r\n        except:\r\n            pass\r\n        _paint_material_cache[0] = m\r\n        return m\r\n    except:\r\n        return None\r\n\r\ndef _paint_faces(el, faces, mat_id):\r\n    \"\"\"\r\n    Belirtilen face'leri mat_id ile boyar.\r\n    Döndürür: (ok_count, fail_count, error_notes)\r\n    Revit 2025'te IsPainted(ElementId, Face) imzası güvenli try/except ile kullanılır.\r\n    \"\"\"\r\n    ok = fail = 0\r\n    notes = []\r\n    for f in faces:\r\n        try:\r\n            try:\r\n                if doc.IsPainted(el.Id, f):\r\n                    doc.RemovePaint(el.Id, f)\r\n            except:\r\n                pass\r\n            doc.Paint(el.Id, f, mat_id)\r\n            ok += 1\r\n        except Exception as ex:\r\n            fail += 1\r\n            notes.append(str(ex)[:80])\r\n    return ok, fail, notes\r\n\r\ndef apply_override(el):\r\n    \"\"\"\r\n    Mesh/DirectShape/BBox fallback durumunda tüm elemanı override ile işaretler.\r\n    Face bazlı Paint başarısız olduğunda fallback olarak çalışır.\r\n    NOT: Tüm elemanı boyar, yalnızca kalıp yüzlerini değil. [LIM-3]\r\n    \"\"\"\r\n    try:\r\n        v = doc.ActiveView\r\n        if v is None:\r\n            return False, \"NoActiveView\"\r\n        sfid = solid_fill_pattern_id()\r\n        ogs = OverrideGraphicSettings()\r\n        ogs.SetSurfaceForegroundPatternColor(MAT_COLOR)\r\n        if sfid != ElementId.InvalidElementId:\r\n            ogs.SetSurfaceForegroundPatternId(sfid)\r\n        ogs.SetProjectionLineColor(MAT_COLOR)\r\n        v.SetElementOverrides(el.Id, ogs)\r\n        return True, \"OverrideApplied\"\r\n    except Exception as ex:\r\n        return False, \"OverrideFail:{}\".format(ex)\r\n\r\n\r\n# ─────────────────── CONFIDENCE SCORING ───────────────────────\r\n# \"Bu sonuca ne kadar güveniyorum?\"\r\n# 0.0 (güvenilmez) – 1.0 (çok güvenilir)\r\n# Döndürür: (score, reasons[]) — reasons açıklama listesi\r\n#\r\n# Puanlama:\r\n#   1. Kategori taban puanı\r\n#   2. BBox fallback → büyük düşüş\r\n#   3. Eğimli eleman → düşüş\r\n#   4. Mesh-only geometry → düşüş\r\n#   5. WALL face density (face/ft²) — hardcoded eşik yerine yoğunluk\r\n#   6. Edge inflated uyarısı → düşüş\r\n#   7. Subtraction: native RC'de +, mesh/IFC'de nötr (boolean riski)\r\n\r\ndef _wall_face_density(v_face_count, bbox_v_area_ft2):\r\n    \"\"\"face/ft² — yüksekse reveal/jamb/artifact şişmesi ihtimali artar.\"\"\"\r\n    if bbox_v_area_ft2 < 1e-6 or v_face_count == 0:\r\n        return 0.0\r\n    return v_face_count / bbox_v_area_ft2\r\n\r\ndef _confidence(cat_key, is_bbox, is_sloped, tri_count,\r\n                v_face_count, edge_inflated, has_sub,\r\n                bbox_v_area_ft2=0.0, is_mesh_heavy=False):\r\n    base = {\r\n        \"COLUMN\":     0.95,\r\n        \"BEAM\":       0.92,\r\n        \"FOUNDATION\": 0.92,\r\n        \"FLOOR\":      0.88,\r\n        \"WALL\":       0.75,\r\n        \"UNKNOWN\":    0.60,\r\n    }\r\n    score   = base.get(cat_key, 0.60)\r\n    reasons = []\r\n\r\n    if is_bbox:\r\n        score -= 0.25\r\n        reasons.append(\"bbox_fallback\")\r\n\r\n    if is_sloped:\r\n        score -= 0.10\r\n        reasons.append(\"sloped_element\")\r\n\r\n    if tri_count > 0 and v_face_count == 0:\r\n        score -= 0.08\r\n        reasons.append(\"mesh_only\")\r\n        is_mesh_heavy = True\r\n\r\n    if cat_key == \"WALL\" and v_face_count > 0:\r\n        density = _wall_face_density(v_face_count, bbox_v_area_ft2)\r\n        if density > 1.0:\r\n            score -= 0.12\r\n            reasons.append(\"wall_high_face_density:{:.2f}/ft2\".format(density))\r\n        elif density > 0.5:\r\n            score -= 0.06\r\n            reasons.append(\"wall_med_face_density:{:.2f}/ft2\".format(density))\r\n\r\n    if edge_inflated:\r\n        score -= 0.08\r\n        reasons.append(\"edge_inflated\")\r\n\r\n    if has_sub:\r\n        if is_mesh_heavy or is_bbox:\r\n            pass  # nötr — boolean engine mesh/IFC'de riskli\r\n        else:\r\n            score += 0.03\r\n            reasons.append(\"subtraction_applied+\")\r\n\r\n    return round(max(0.0, min(1.0, score)), 2), reasons\r\n\r\ndef _confidence_label(score):\r\n    if score >= 0.90: return \"HIGH\"\r\n    if score >= 0.75: return \"MEDIUM\"\r\n    if score >= 0.55: return \"LOW\"\r\n    return \"REVIEW\"\r\n\r\n# ─────────────────── KURAL KARARI ──────────────────────────────\r\ndef decide(el):\r\n    \"\"\"\r\n    Elemana ait kurala göre hesaplanacak alanı ve boyanacak face'leri döndürür.\r\n\r\n    Geometry (Solid/Mesh) sıfır gelirse BBox fallback devreye girer ve\r\n    metraj yine doğru hesaplanır. Bu durum debug'a 'BBOX_FALLBACK' olarak yazılır.\r\n    Kategori tespiti BIC int + ad çift kontrolüyle yapılır.\r\n    \"\"\"\r\n    v_a, t_a, b_a, v_f, b_f, t_f, tri_dbg, sub_notes = classify_areas(el)\r\n    cat_key = resolve_category(el)\r\n    cnts    = (len(v_f), len(b_f), len(t_f))\r\n    areas   = (v_a, t_a, b_a)\r\n    sub_tag = \" [sub:{}]\".format(len(sub_notes)) if sub_notes else \"\"\r\n\r\n    # Kategoriye göre geometry'den hesaplanan alan\r\n    if cat_key == \"COLUMN\":\r\n        geo_area = v_a\r\n        geo_faces = list(v_f)\r\n        rule_base = \"COLUMN(yan)\"\r\n    elif cat_key == \"BEAM\":\r\n        geo_area  = v_a + b_a\r\n        geo_faces = list(v_f) + list(b_f)\r\n        rule_base = \"BEAM(yan+alt)\"\r\n    elif cat_key == \"FLOOR\":\r\n        # Radye / zemin döşemesi mi?\r\n        sog, sog_reason = is_slab_on_grade(el)\r\n        if sog:\r\n            # Zemine oturur → alt yüzey kalıp yok, sadece yan\r\n            geo_area  = v_a\r\n            geo_faces = list(v_f)\r\n            rule_base = \"FLOOR_SOG(yan)[{}]\".format(sog_reason)\r\n        else:\r\n            geo_area  = v_a + b_a\r\n            geo_faces = list(v_f) + list(b_f)\r\n            rule_base = \"FLOOR(yan+alt)\"\r\n    elif cat_key == \"WALL\":\r\n        # ALL_VERTICAL_FACES yaklaşımı.\r\n        # Tüm dikey yüzeyler toplanır — her zaman \"en az upper bound\" verir.\r\n        # [LIM-2]: reveal/niche/jamb/artifact şişirmesi mevcut.\r\n        # Coplanar clustering kaldırıldı: plane grouping ≠ shell reconstruction,\r\n        # disconnected island / curved / L-U-T / segmented wall senaryolarında\r\n        # ALL_VERTICAL_FACES'ten daha kötü sonuç veriyordu.\r\n        geo_area  = v_a\r\n        geo_faces = list(v_f)\r\n        rule_base = \"WALL(all_v,cnt={})\".format(len(v_f))\r\n\r\n    elif cat_key == \"FOUNDATION\":\r\n        geo_area  = v_a\r\n        geo_faces = list(v_f)\r\n        rule_base = \"FOUNDATION(yan)\"\r\n    else:\r\n        geo_area  = v_a + b_a\r\n        geo_faces = list(v_f) + list(b_f)\r\n        rule_base = \"FALLBACK(yan+alt)\"\r\n\r\n    # ── FLOOR EDGE ŞİŞME KONTROLÜ ─────────────────────────────\r\n    _, _, _, _dx, _dy, _dz = bbox_sizes(el)\r\n    edge_inflated = False\r\n    if cat_key == \"FLOOR\" and geo_area > 1e-9:\r\n        bbox_edge_est = 2.0 * (_dx + _dy) * _dz\r\n        if bbox_edge_est > 1e-9 and geo_area > bbox_edge_est * 1.5:\r\n            rule_base = rule_base + \" [WARN:edge_inflated]\"\r\n            edge_inflated = True\r\n\r\n    # ── BBOX DİKEY ALAN (face density için) ─────────────────────\r\n    # WALL confidence'ında face/ft² hesabı için bbox dikey alanı\r\n    _bbox_v_area_ft2 = 2.0 * (max(_dx * _dz, _dy * _dz))  # iki büyük yüz\r\n\r\n    # ── BBOX FALLBACK ─────────────────────────────────────────\r\n    if geo_area < 1e-9:\r\n        fallback_ft2, fallback_note = bbox_fallback_area_ft2(el, cat_key)\r\n        is_sloped  = _is_sloped_element(el, v_f, b_f, t_f)\r\n        slope_warn = \" WARN:sloped_bbox_overestimate\" if is_sloped else \"\"\r\n        rule = \"{} [{}{}]{}\".format(rule_base, fallback_note, slope_warn, sub_tag)\r\n        conf, conf_reasons = _confidence(\r\n            cat_key, is_bbox=True, is_sloped=is_sloped,\r\n            tri_count=sum(tri_dbg), v_face_count=len(v_f),\r\n            edge_inflated=False, has_sub=bool(sub_notes),\r\n            bbox_v_area_ft2=_bbox_v_area_ft2\r\n        )\r\n        return fallback_ft2, [], rule, cnts, areas, tri_dbg, sub_notes, (conf, conf_reasons)\r\n\r\n    conf, conf_reasons = _confidence(\r\n        cat_key, is_bbox=False,\r\n        is_sloped=_is_sloped_element(el, v_f, b_f, t_f),\r\n        tri_count=sum(tri_dbg), v_face_count=len(v_f),\r\n        edge_inflated=edge_inflated, has_sub=bool(sub_notes),\r\n        bbox_v_area_ft2=_bbox_v_area_ft2\r\n    )\r\n    return geo_area, geo_faces, rule_base + sub_tag, cnts, areas, tri_dbg, sub_notes, (conf, conf_reasons)\r\n\r\n# ─────────────────── ELEMAN TOPLAMA ────────────────────────────\r\ndef collect_elements():\r\n    \"\"\"\r\n    use_selection=True  → Revit aktif seçiminden al\r\n    use_selection=False → IN[0]'dan al\r\n    \"\"\"\r\n    if use_selection:\r\n        try:\r\n            sel_ids = uidoc.Selection.GetElementIds()\r\n            return [doc.GetElement(i) for i in sel_ids if doc.GetElement(i) is not None]\r\n        except Exception as ex:\r\n            return []\r\n    else:\r\n        raw = elems_in\r\n        if raw is None:\r\n            return []\r\n        if not isinstance(raw, list):\r\n            raw = [raw]\r\n        return [unwrap(x) for x in raw]\r\n\r\n# ─────────────────────── ANA DÖNGÜ ─────────────────────────────\r\nelements_out      = []\r\nformwork_m2_list  = []\r\ndebug_list        = []\r\nsize_list         = []\r\nlevel_list        = []\r\ngrid_list         = []\r\nelemid_list       = []\r\nconfidence_list   = []  # OUT[7]: 0.0–1.0 confidence skoru\r\nreview_list       = []  # OUT[8]: conf < 0.55 olan eleman ID'leri (REVIEW)\r\n\r\nelements = collect_elements()\r\n\r\nTransactionManager.Instance.EnsureInTransaction(doc)\r\n\r\ntry:\r\n    for el in elements:\r\n        if not isinstance(el, Element):\r\n            debug_list.append(\"Input not Element: {}\".format(repr(el)))\r\n            elements_out.append(None)\r\n            formwork_m2_list.append(0.0)\r\n            size_list.append((0.0, 0.0, 0.0))\r\n            level_list.append(\"\")\r\n            grid_list.append(\"\")\r\n            elemid_list.append(None)\r\n            confidence_list.append(0.0)\r\n            continue\r\n\r\n        eid_s = eid_str(el)\r\n        eid_i = eid_int(el)\r\n        elemid_list.append(eid_i)\r\n\r\n        Lx_m, Ly_m, Lz_m, Lx_ft, Ly_ft, Lz_ft = bbox_sizes(el)\r\n        lvl  = level_name(el)\r\n        grid = near_grids(el)\r\n\r\n        size_list.append((Lx_m, Ly_m, Lz_m))\r\n        level_list.append(lvl)\r\n        grid_list.append(grid)\r\n\r\n        area_ft2, faces, rule, cnts, areas_dbg, tri_dbg, sub_notes, conf_tuple = decide(el)\r\n        v_a, t_a, b_a = areas_dbg\r\n        tri_v, tri_b, tri_t = tri_dbg\r\n        v_c, b_c, t_c = cnts\r\n        conf, conf_reasons = conf_tuple\r\n\r\n        area_m2 = area_ft2 * FT2_TO_M2\r\n        formwork_m2_list.append(round(area_m2, 2))\r\n        confidence_list.append(conf)\r\n\r\n        # AUTO REVIEW LIST: conf < 0.55 → manuel doğrulama önerilir\r\n        if conf < 0.55:\r\n            review_list.append(\"{} | Id={} | m2={} | conf={} | reasons={}\".format(\r\n                _confidence_label(conf), eid_s,\r\n                fmt_m2(area_m2, 2, True), conf,\r\n                \", \".join(conf_reasons) if conf_reasons else \"none\"\r\n            ))\r\n\r\n        # ── PARAMETRE YAZMA ──────────────────────────────────────\r\n        # Formwork_m² → Double parametreyse iç birim ft², String ise virgüllü m²\r\n        p_fw, n_fw = find_param(el, FORMWORK_PARAM_NAMES)\r\n        if p_fw:\r\n            ok, msg = set_param(\r\n                p_fw,\r\n                str_val=fmt_m2(area_m2, 2, True),\r\n                double_internal=area_ft2\r\n            )\r\n            if not ok:\r\n                debug_list.append(\"Id {} | Formwork FAIL ({}): {}\".format(eid_s, n_fw, msg))\r\n        else:\r\n            debug_list.append(\"Id {} | UYARI: Formwork param yok\".format(eid_s))\r\n\r\n        # FW_L / FW_W / FW_H → ft cinsinden iç birim\r\n        for names, val_m, label in [\r\n            (LENX_PARAM_NAMES, Lx_m, \"FW_L\"),\r\n            (LENY_PARAM_NAMES, Ly_m, \"FW_W\"),\r\n            (LENZ_PARAM_NAMES, Lz_m, \"FW_H\"),\r\n        ]:\r\n            p, n = find_param(el, names)\r\n            if p:\r\n                ok, msg = set_param(\r\n                    p,\r\n                    str_val=fmt_m2(val_m, 3, True),\r\n                    double_internal=_internal_length(val_m)\r\n                )\r\n                if not ok:\r\n                    debug_list.append(\"Id {} | {} FAIL ({}): {}\".format(eid_s, label, n, msg))\r\n\r\n        # FW_Level / FW_Grid → Text\r\n        p_lvl, _ = find_param(el, LEVEL_PARAM_NAMES)\r\n        if p_lvl:\r\n            ok, msg = set_param(p_lvl, str_val=lvl or \"\")\r\n            if not ok:\r\n                debug_list.append(\"Id {} | FW_Level FAIL: {}\".format(eid_s, msg))\r\n\r\n        p_gr, _ = find_param(el, GRID_PARAM_NAMES)\r\n        if p_gr:\r\n            ok, msg = set_param(p_gr, str_val=grid or \"\")\r\n            if not ok:\r\n                debug_list.append(\"Id {} | FW_Grid FAIL: {}\".format(eid_s, msg))\r\n\r\n        # FW_ElemId → Integer veya String\r\n        p_eid, _ = find_param(el, ELEMID_PARAM_NAMES)\r\n        if p_eid:\r\n            ok, msg = set_param(\r\n                p_eid,\r\n                str_val=eid_s,\r\n                int_val=eid_i if eid_i is not None else 0\r\n            )\r\n            if not ok:\r\n                debug_list.append(\"Id {} | FW_ElemId FAIL: {}\".format(eid_s, msg))\r\n\r\n        # ── BOYAMA ───────────────────────────────────────────────\r\n        # Önce decide() tarafından seçilen face'leri doc.Paint() ile boya.\r\n        # Bu sadece kalıp yapılacak yüzeyleri renklendirir (beton gören yüzler).\r\n        # Solid face'lerde çalışır. Mesh/DirectShape/BBox fallback durumunda\r\n        # paint başarısız olur → tüm eleman override'a düşer (fallback).\r\n        paint_ok = paint_fail = 0\r\n        paint_note = \"\"\r\n\r\n        if do_paint:\r\n            if faces:\r\n                mat = _get_or_create_paint_material()\r\n                if mat is not None:\r\n                    paint_ok, paint_fail, paint_notes = _paint_faces(el, faces, mat.Id)\r\n                    if paint_fail > 0:\r\n                        paint_note = paint_notes[0] if paint_notes else \"PaintFail\"\r\n\r\n            # Face paint olmadıysa (Mesh/DirectShape/BBox fallback) override uygula\r\n            if paint_ok == 0:\r\n                ov_ok, ov_msg = apply_override(el)\r\n                paint_note = (paint_note + \" | OverrideFallback:\" + ov_msg).strip(\" |\")\r\n\r\n        # ── ÇIKIŞA EKLE ──────────────────────────────────────────\r\n        try:\r\n            elements_out.append(el.ToDSType(True))\r\n        except:\r\n            elements_out.append(el)\r\n\r\n        # Tanı için kategori adını da al\r\n        try:\r\n            _cat_name_dbg = el.Category.Name if el.Category else \"?\"\r\n        except:\r\n            _cat_name_dbg = \"?\"\r\n\r\n        debug_list.append(\r\n            \"Id={} | {} | CAT_BIC={} CAT_NAME='{}' | \"\r\n            \"area_ft2(v/t/b)={:.3f}/{:.3f}/{:.3f} | m2={} | \"\r\n            \"conf={} ({}) reasons=[{}] | \"\r\n            \"faces(v/b/t)={}/{}/{} | meshTri(v/b/t)={}/{}/{} | \"\r\n            \"paint_ok={} paint_fail={} | note={} | \"\r\n            \"sub={} | \"\r\n            \"size(m)=({},{},{}) | Level='{}' | Grid='{}'\".format(\r\n                eid_s, rule, cat_bic(el), _cat_name_dbg,\r\n                v_a, t_a, b_a,\r\n                fmt_m2(area_m2, 2, True),\r\n                conf, _confidence_label(conf),\r\n                \", \".join(conf_reasons) if conf_reasons else \"ok\",\r\n                v_c, b_c, t_c,\r\n                tri_v, tri_b, tri_t,\r\n                paint_ok, paint_fail, paint_note,\r\n                \"; \".join(sub_notes) if sub_notes else \"none\",\r\n                str(Lx_m).replace(\".\", \",\"),\r\n                str(Ly_m).replace(\".\", \",\"),\r\n                str(Lz_m).replace(\".\", \",\"),\r\n                lvl, grid\r\n            )\r\n        )\r\n\r\nexcept Exception as main_ex:\r\n    debug_list.append(\"KRITIK HATA: {}\".format(main_ex))\r\n    TransactionManager.Instance.ForceCloseTransaction()\r\n    raise\r\n\r\nTransactionManager.Instance.TransactionTaskDone()\r\n\r\n# ─────────────────────── ÇIKIŞLAR ──────────────────────────────\r\n# OUT[0] : Elemanlar (Dynamo nesneleri)\r\n# OUT[1] : Formwork m² listesi\r\n# OUT[2] : Debug mesajları (conf + reasons dahil)\r\n# OUT[3] : Boyut listesi [(Lx,Ly,Lz), ...]\r\n# OUT[4] : Kat isimleri\r\n# OUT[5] : Aks isimleri\r\n# OUT[6] : Element ID listesi\r\n# OUT[7] : Confidence skoru listesi [0.0–1.0]\r\n#            0.90+ HIGH   → güvenilir\r\n#            0.75+ MEDIUM → normal kontrol\r\n#            0.55+ LOW    → dikkatli kullan\r\n#            <0.55 REVIEW → manuel doğrulama önerilir\r\n# OUT[8] : Review listesi — conf < 0.55 olan elemanlar\r\n#            \"REVIEW | Id=... | m2=... | conf=... | reasons=...\"\r\n#            Dynamo'da Watch node ile direkt görüntülenebilir.\r\nOUT = [\r\n    elements_out,\r\n    formwork_m2_list,\r\n    debug_list,\r\n    size_list,\r\n    level_list,\r\n    grid_list,\r\n    elemid_list,\r\n    confidence_list,\r\n    review_list,\r\n]",
+      "Engine": "CPython3",
+      "VariableInputPorts": true,
+      "Id": "e96ce018c815417a875322a4fe7eef52",
+      "NodeType": "PythonScriptNode",
+      "Inputs": [
+        {
+          "Id": "c731500de2ea4fd19bb196a700a9226b",
+          "Name": "IN[0]",
+          "Description": "Input #0",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "5d4ba92280a24000ad0dee5d5b85149e",
+          "Name": "OUT",
+          "Description": "Result of the python script",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Runs an embedded Python script."
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 200.0,
+      "Id": "98ebdbbfa021444faee323a39c9944ae",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "eb3cf24f0b56463580965c93d7c5dea9",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "82f43ac5fe004349a342f4e0af4ba2f6",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.ElementsOfCategory, DSRevitNodesUI",
+      "Id": "aee6796adfc74b9e8e921d31eda00eb1",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "506865f5977748eea3252cd693a7a083",
+          "Name": "Category",
+          "Description": "The Category",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "624e4a922e8542e099da5654e7a8d673",
+          "Name": "Elements",
+          "Description": "An element class.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Get all elements of the specified category from the model."
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "7a37089f26e4408ca692e38d05bcfa87",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "8e233d699be44296bdf6ffac940f6f6a",
+          "Name": "list",
+          "Description": "List to fetch an item from.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "8f52dac97d8940baae38658762d93ff2",
+          "Name": "index",
+          "Description": "Index of the item to be fetched.\n\nint",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "413135123a5449c7a15c25479d48d4ba",
+          "Name": "item",
+          "Description": "Item in the list at the given index.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.GetItemAtIndex@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Returns an item from the given list that's located at the specified index.\n\nList.GetItemAtIndex (list: var[]..[], index: int): var[]..[]"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.DoubleInput, CoreNodeModels",
+      "NumberType": "Double",
+      "Id": "7e62a894c44949469cce3ddb0097ef98",
+      "NodeType": "NumberInputNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "69ae84182aed439086587628a2d476f9",
+          "Name": "",
+          "Description": "Double",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Creates a number.",
+      "InputValue": 1.0
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "d0d03b0ce0634ebba4d8350c76f1bd49",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "285bf420843f47f3bcd9bf5067143fed",
+          "Name": "list",
+          "Description": "List to fetch an item from.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "68bd2512d0b64918a03bf3ad0fa33d35",
+          "Name": "index",
+          "Description": "Index of the item to be fetched.\n\nint",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "da8c241273934679a0eeb8713c1aa20c",
+          "Name": "item",
+          "Description": "Item in the list at the given index.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.GetItemAtIndex@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Returns an item from the given list that's located at the specified index.\n\nList.GetItemAtIndex (list: var[]..[], index: int): var[]..[]"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 40.0,
+      "Id": "5a20dc1deea14a26bab4df551842179a",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "e9d51549df0d4cf1bb9ad8f1970a0769",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "ba8c8bb3dc0448e2be828c8ff66f27e4",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.DoubleInput, CoreNodeModels",
+      "NumberType": "Double",
+      "Id": "f1eeca99f7a343c39d143e51d727be9f",
+      "NodeType": "NumberInputNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "2bc3967e797c4654acccbb55a9282167",
+          "Name": "",
+          "Description": "Double",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Creates a number.",
+      "InputValue": 0.0
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "73ada9e18cd34928b1b066c33a07f60d",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "486295e560ee43fabc4316b3c65d7c6f",
+          "Name": "list",
+          "Description": "List to fetch an item from.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "169c0d75f0244e62b76d6b0546cdbb68",
+          "Name": "index",
+          "Description": "Index of the item to be fetched.\n\nint",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "1bc42c24562541aea2db14a96823c1bc",
+          "Name": "item",
+          "Description": "Item in the list at the given index.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.GetItemAtIndex@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Returns an item from the given list that's located at the specified index.\n\nList.GetItemAtIndex (list: var[]..[], index: int): var[]..[]"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.DoubleInput, CoreNodeModels",
+      "NumberType": "Double",
+      "Id": "c51f6a1bbf8345039543916cbd6d81c6",
+      "NodeType": "NumberInputNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "1ec9fce0b33b4be692f0690c36e18098",
+          "Name": "",
+          "Description": "Double",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Creates a number.",
+      "InputValue": 3.0
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.DoubleInput, CoreNodeModels",
+      "NumberType": "Double",
+      "Id": "2af3eb83559c46feb53dbf3f38d646bf",
+      "NodeType": "NumberInputNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "9e94d6c7676e4a8f868393b8366775c0",
+          "Name": "",
+          "Description": "Double",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Creates a number.",
+      "InputValue": 2.0
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "bcc019f1a3c74c0da41dff737735490b",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "eea9592a79464adab35fdce9cc9a9418",
+          "Name": "list",
+          "Description": "List to fetch an item from.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "7027a2965e1345319ea1ce3d331dee94",
+          "Name": "index",
+          "Description": "Index of the item to be fetched.\n\nint",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "a282ef571499404398674ec2c043be1e",
+          "Name": "item",
+          "Description": "Item in the list at the given index.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.GetItemAtIndex@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Returns an item from the given list that's located at the specified index.\n\nList.GetItemAtIndex (list: var[]..[], index: int): var[]..[]"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.CreateList, CoreNodeModels",
+      "VariableInputPorts": true,
+      "Id": "80a5a092c2814112bc26b1d8de0b25fd",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "2b337b16abb5440b9b735bc2f5aeebed",
+          "Name": "item0",
+          "Description": "Item Index #0",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "4c1e028f414b48efa44be022201f1abf",
+          "Name": "item1",
+          "Description": "Item Index #1",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "6efe6aa421de4c88b577ba58fc2ff630",
+          "Name": "item2",
+          "Description": "Item Index #2",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "c93a1d645d8048eaa5721c386961d962",
+          "Name": "item3",
+          "Description": "Item Index #3",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "3a7fa9a75faa4049a1623f8b4319b1fd",
+          "Name": "item4",
+          "Description": "Item Index #4",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "cb01bc37f41843ddb69df426d8aea7dd",
+          "Name": "item5",
+          "Description": "Item Index #5",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "e0933836c4c24efc87902782d011eeda",
+          "Name": "list",
+          "Description": "A list (type: var[]..[])",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Makes a new list from the given inputs"
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "24b134c4d0a644a8a3dcd25e86510228",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "b3b4815d65704933a2b1a5763acc386d",
+          "Name": "list",
+          "Description": "List to flatten.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "2534993c9bab4025a8156b465247cc55",
+          "Name": "amount",
+          "Description": "Layers of list nesting to remove (-1 will remove all list nestings)\n\nint\nDefault value : -1",
+          "UsingDefaultValue": true,
+          "Level": 3,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "bd938ff0f30346a790956ffe0729c3e7",
+          "Name": "list",
+          "Description": "Flattened list by amount",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.Flatten@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Flattens a nested list of lists by a certain amount.\n\nList.Flatten (list: var[]..[], amount: int = -1): var[]..[]"
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.Categories, DSRevitNodesUI",
+      "SelectedIndex": 575,
+      "SelectedString": "OST_StructuralColumns",
+      "Id": "30282ac388dc4ccfbdfa3b2f6064018c",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "f346a827b1b447b099323a30f9401feb",
+          "Name": "Category",
+          "Description": "The selected Category.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "All built-in categories."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.Categories, DSRevitNodesUI",
+      "SelectedIndex": 603,
+      "SelectedString": "OST_StructuralFraming",
+      "Id": "e050c87846ff4af5a1039b29ce34124d",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "9d6aa3a30ded40108932f7765855d354",
+          "Name": "Category",
+          "Description": "The selected Category.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "All built-in categories."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.Categories, DSRevitNodesUI",
+      "SelectedIndex": 714,
+      "SelectedString": "OST_Walls",
+      "Id": "be0a19afc55b4c65a322c95d207fe71f",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "ca73787b175547c68d4422c062d82be5",
+          "Name": "Category",
+          "Description": "The selected Category.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "All built-in categories."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.Categories, DSRevitNodesUI",
+      "SelectedIndex": 601,
+      "SelectedString": "OST_StructuralFoundation",
+      "Id": "e66b517989384fd38d79c35e303c2cd8",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "6ad34f736c0b465a9b55cbfd1fd89e9f",
+          "Name": "Category",
+          "Description": "The selected Category.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "All built-in categories."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.Categories, DSRevitNodesUI",
+      "SelectedIndex": 224,
+      "SelectedString": "OST_Floors",
+      "Id": "a8172b7074ee48dda742c76aee8c7a02",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "12ecc4f51d24440bb875399342283ac7",
+          "Name": "Category",
+          "Description": "The selected Category.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "All built-in categories."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.ElementsOfCategory, DSRevitNodesUI",
+      "Id": "1d243a4a18864e4bba55d1e15577f6d2",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "99ebdd2dd19843209e3f851ef9f3a9ac",
+          "Name": "Category",
+          "Description": "The Category",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "2ed545fb538443c5ad82c1b6572f9400",
+          "Name": "Elements",
+          "Description": "An element class.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Get all elements of the specified category from the model."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.ElementsOfCategory, DSRevitNodesUI",
+      "Id": "bf9129d841b54fad815f57711990f89b",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "a2f8331ae98d4dddb326c9cf8d392e03",
+          "Name": "Category",
+          "Description": "The Category",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "a935107c754f4003a8f9c8869579ba80",
+          "Name": "Elements",
+          "Description": "An element class.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Get all elements of the specified category from the model."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.ElementsOfCategory, DSRevitNodesUI",
+      "Id": "f8a42d8ed6a749e582140cdaac9acf63",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "d7ef7c7853e341ae8d855865ca77fc93",
+          "Name": "Category",
+          "Description": "The Category",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "d0c1ff609b514c158b5d57965e461731",
+          "Name": "Elements",
+          "Description": "An element class.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Get all elements of the specified category from the model."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.ElementsOfCategory, DSRevitNodesUI",
+      "Id": "352a3c9d611f40bcb1dd563a5d9a5abd",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "185e892278c34195a8ceb2f739203494",
+          "Name": "Category",
+          "Description": "The Category",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "ac9c7dd860cf4c32896eaae8e1f483f2",
+          "Name": "Elements",
+          "Description": "An element class.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Get all elements of the specified category from the model."
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 40.0,
+      "Id": "eebbf603b9304a4d85fc2bdeeca24484",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "e956cc97570a456f953e6070d10b514a",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "2d936f5cc4d2484e8fac73dec3eb5088",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 40.0,
+      "Id": "120aaedd1159464cb58806f805342300",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "1c9ca356e8894b07b074b0e7cae00730",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "68586da038f5477aa127c22974d5f6ed",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "013604290663456c8446affe40baa9ab",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "685aa2b2e64e4fcda41cb79fce2c12ee",
+          "Name": "list",
+          "Description": "List to fetch an item from.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "c1737da71c784df78f2d9b641d058560",
+          "Name": "index",
+          "Description": "Index of the item to be fetched.\n\nint",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "ce2f44b2d79f433f9287bda481140dce",
+          "Name": "item",
+          "Description": "Item in the list at the given index.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.GetItemAtIndex@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Returns an item from the given list that's located at the specified index.\n\nList.GetItemAtIndex (list: var[]..[], index: int): var[]..[]"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.DoubleInput, CoreNodeModels",
+      "NumberType": "Double",
+      "Id": "e429c6cccc6545b78ea318b6b6d71401",
+      "NodeType": "NumberInputNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "e70214a0179345b695d1aee38b343e5b",
+          "Name": "",
+          "Description": "Double",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Creates a number.",
+      "InputValue": 4.0
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 40.0,
+      "Id": "017067764b9544a1a688c78cdb7493af",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "61fffebeb20c411aa26327076476660e",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "c7e970dc3fe64ff0832187fe700978bd",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "99f1e1a4cfe9468286e294db5bbf5d03",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "88e9f4970777470fa6d45dfda8e9ee48",
+          "Name": "list",
+          "Description": "List to fetch an item from.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "2982310a32354ea89a9b3116723b0c69",
+          "Name": "index",
+          "Description": "Index of the item to be fetched.\n\nint",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "a7b4864cfea645c2a0fcd9736beeb4a0",
+          "Name": "item",
+          "Description": "Item in the list at the given index.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.GetItemAtIndex@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Returns an item from the given list that's located at the specified index.\n\nList.GetItemAtIndex (list: var[]..[], index: int): var[]..[]"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.DoubleInput, CoreNodeModels",
+      "NumberType": "Double",
+      "Id": "38df7d8ec15d45ef926a1574e0784a86",
+      "NodeType": "NumberInputNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "4f995e2e5f3f428f83502dd530b00332",
+          "Name": "",
+          "Description": "Double",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Creates a number.",
+      "InputValue": 5.0
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.Categories, DSRevitNodesUI",
+      "SelectedIndex": 551,
+      "SelectedString": "OST_Stairs",
+      "Id": "02506d7d8be34021b91cb72480dd9739",
+      "NodeType": "ExtensionNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "91dce243eb4d491cad323169cc2b1e4b",
+          "Name": "Category",
+          "Description": "The selected Category.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "All built-in categories."
+    },
+    {
+      "ConcreteType": "DSRevitNodesUI.ElementsOfCategory, DSRevitNodesUI",
+      "Id": "e71969fb97ad486e912dd3664536c154",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "95da40aa924c49c2bf90433fb0d3664f",
+          "Name": "Category",
+          "Description": "The Category",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "a0570ff846974abba403c38a977e7381",
+          "Name": "Elements",
+          "Description": "An element class.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Get all elements of the specified category from the model."
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 40.0,
+      "Id": "73f709679b3144e392f220d7b13facf0",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "d8684612c1024c1fb2546e0d2dc94997",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "5def297a1a1c4f31a225ec25850fd58d",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 200.0,
+      "WatchHeight": 40.0,
+      "Id": "37b05e2e68ac4e41aff802a11080de99",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "718fe38326bc4f4982b97ad14c1a71f6",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "0728212e3bb1425189d601aa5a2cea71",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "5e89ef7c15df4bc2baa0c963aee086f2",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "2eaa2bf8c3424b23ad17ad0e0ef6b03e",
+          "Name": "list",
+          "Description": "List to fetch an item from.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        },
+        {
+          "Id": "7e25b4bb0ac043d79e6e52f0abdd7573",
+          "Name": "index",
+          "Description": "Index of the item to be fetched.\n\nint",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "876c4f8dbe624b77b2ce53a68c45fbfa",
+          "Name": "item",
+          "Description": "Item in the list at the given index.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.GetItemAtIndex@var[]..[],int",
+      "Replication": "Auto",
+      "Description": "Returns an item from the given list that's located at the specified index.\n\nList.GetItemAtIndex (list: var[]..[], index: int): var[]..[]"
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Input.DoubleInput, CoreNodeModels",
+      "NumberType": "Double",
+      "Id": "133ca11ad41249fbaff1cf4b4ad699be",
+      "NodeType": "NumberInputNode",
+      "Inputs": [],
+      "Outputs": [
+        {
+          "Id": "d0d0218936754d23a757258e58099919",
+          "Name": "",
+          "Description": "Double",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Creates a number.",
+      "InputValue": -1.0
+    },
+    {
+      "ConcreteType": "CoreNodeModels.Watch, CoreNodeModels",
+      "WatchWidth": 28.0,
+      "WatchHeight": 40.0,
+      "Id": "305c4e959e7c48cd9e5654da5ec19662",
+      "NodeType": "ExtensionNode",
+      "Inputs": [
+        {
+          "Id": "f88cb7f72112459d80e26fe770b4ab0d",
+          "Name": "",
+          "Description": "Node to show output from",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "a937575182364b6c8ef5662ecd98e37e",
+          "Name": "",
+          "Description": "Node output",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Replication": "Disabled",
+      "Description": "Visualizes a node's output"
+    },
+    {
+      "ConcreteType": "Dynamo.Graph.Nodes.ZeroTouch.DSFunction, DynamoCore",
+      "Id": "a7cbd6d7e0fa422f8f5587f0f904207c",
+      "NodeType": "FunctionNode",
+      "Inputs": [
+        {
+          "Id": "5e3e3e6a757246a7b3d12362e8640d9e",
+          "Name": "list",
+          "Description": "List to get the item count of.\n\nvar[]..[]",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "Outputs": [
+        {
+          "Id": "a7184849ab044a8eae4ea08493a71040",
+          "Name": "int",
+          "Description": "List length.",
+          "UsingDefaultValue": false,
+          "Level": 2,
+          "UseLevels": false,
+          "KeepListStructure": false
+        }
+      ],
+      "FunctionSignature": "DSCore.List.Count@var[]..[]",
+      "Replication": "Auto",
+      "Description": "Returns the number of items stored in the given list.\n\nList.Count (list: var[]..[]): int"
+    }
+  ],
+  "Connectors": [
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "8e233d699be44296bdf6ffac940f6f6a",
+      "Id": "8e93799240934d49b69de2ada889fd2c",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "eea9592a79464adab35fdce9cc9a9418",
+      "Id": "ed0c0c155d8a41ee9ea676bf0a1fead8",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "486295e560ee43fabc4316b3c65d7c6f",
+      "Id": "0963ce93d8b94587b60993455eb394d3",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "685aa2b2e64e4fcda41cb79fce2c12ee",
+      "Id": "ff0cfbbb315c4df98f79cd8f6efe67ea",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "88e9f4970777470fa6d45dfda8e9ee48",
+      "Id": "a95c66c7f39f46d6bf6d60e05ae6821e",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "2eaa2bf8c3424b23ad17ad0e0ef6b03e",
+      "Id": "eb9ad5e2e38b49ce873832574cf62ead",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "5e3e3e6a757246a7b3d12362e8640d9e",
+      "Id": "f642e5b8b31b4ff398e4b0b8ebfb2030",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "5d4ba92280a24000ad0dee5d5b85149e",
+      "End": "285bf420843f47f3bcd9bf5067143fed",
+      "Id": "d11ca40476c44abe83610aef100c92ad",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "624e4a922e8542e099da5654e7a8d673",
+      "End": "2b337b16abb5440b9b735bc2f5aeebed",
+      "Id": "6d0e75b59f9e4baa93d7c97d4614bbd9",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "413135123a5449c7a15c25479d48d4ba",
+      "End": "eb3cf24f0b56463580965c93d7c5dea9",
+      "Id": "b0531d79246645e08103ade5decbd091",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "69ae84182aed439086587628a2d476f9",
+      "End": "8f52dac97d8940baae38658762d93ff2",
+      "Id": "fba239a7b5434ba893ef8d1f40efc3cd",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "da8c241273934679a0eeb8713c1aa20c",
+      "End": "e9d51549df0d4cf1bb9ad8f1970a0769",
+      "Id": "2f73bf4a6572496aabfece07da7d1b7c",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "2bc3967e797c4654acccbb55a9282167",
+      "End": "68bd2512d0b64918a03bf3ad0fa33d35",
+      "Id": "e0722cf9083e4b6fa20dacc5cf3a9dd5",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "1bc42c24562541aea2db14a96823c1bc",
+      "End": "e956cc97570a456f953e6070d10b514a",
+      "Id": "340e3cd00dce402f8420ce6a0bb62fc7",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "1ec9fce0b33b4be692f0690c36e18098",
+      "End": "169c0d75f0244e62b76d6b0546cdbb68",
+      "Id": "5f0d10008d55423386f1054283f57707",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "9e94d6c7676e4a8f868393b8366775c0",
+      "End": "7027a2965e1345319ea1ce3d331dee94",
+      "Id": "7d53587f0da14ac7b65c5cdabb5ed454",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "a282ef571499404398674ec2c043be1e",
+      "End": "d8684612c1024c1fb2546e0d2dc94997",
+      "Id": "22e207a80436429580d35d68ac8a0917",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "e0933836c4c24efc87902782d011eeda",
+      "End": "b3b4815d65704933a2b1a5763acc386d",
+      "Id": "1467afb7385b4ff29e4575a5ed0c7e02",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "bd938ff0f30346a790956ffe0729c3e7",
+      "End": "c731500de2ea4fd19bb196a700a9226b",
+      "Id": "099ab3facb0b4235899a9d463b8f65b4",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "f346a827b1b447b099323a30f9401feb",
+      "End": "506865f5977748eea3252cd693a7a083",
+      "Id": "3b08f076f3934891ad67f85bd16311e4",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "9d6aa3a30ded40108932f7765855d354",
+      "End": "a2f8331ae98d4dddb326c9cf8d392e03",
+      "Id": "019293488f3942c5a917c6dc5899db50",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "ca73787b175547c68d4422c062d82be5",
+      "End": "d7ef7c7853e341ae8d855865ca77fc93",
+      "Id": "c20bb7066e8641829b4244645b92cf5d",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "6ad34f736c0b465a9b55cbfd1fd89e9f",
+      "End": "185e892278c34195a8ceb2f739203494",
+      "Id": "59190ef95a1b419fa98479c9667f19df",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "12ecc4f51d24440bb875399342283ac7",
+      "End": "99ebdd2dd19843209e3f851ef9f3a9ac",
+      "Id": "f8612574ab1243c0bae53bbf40afcc2c",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "2ed545fb538443c5ad82c1b6572f9400",
+      "End": "4c1e028f414b48efa44be022201f1abf",
+      "Id": "85b740968f9f4f99aa33145bdb716e94",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "a935107c754f4003a8f9c8869579ba80",
+      "End": "6efe6aa421de4c88b577ba58fc2ff630",
+      "Id": "ca3a0676f17240b08af52e7b305d9123",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "d0c1ff609b514c158b5d57965e461731",
+      "End": "3a7fa9a75faa4049a1623f8b4319b1fd",
+      "Id": "107262fc3c4448cfa9832275feb38f55",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "ac9c7dd860cf4c32896eaae8e1f483f2",
+      "End": "c93a1d645d8048eaa5721c386961d962",
+      "Id": "0a5d6d4f77e8431eb9a9a58438d75b82",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "ce2f44b2d79f433f9287bda481140dce",
+      "End": "1c9ca356e8894b07b074b0e7cae00730",
+      "Id": "53b57b4e66414505b8e97604fdf5428d",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "e70214a0179345b695d1aee38b343e5b",
+      "End": "c1737da71c784df78f2d9b641d058560",
+      "Id": "d7f4c860272b40d9a8aafe732d30bc0a",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "a7b4864cfea645c2a0fcd9736beeb4a0",
+      "End": "61fffebeb20c411aa26327076476660e",
+      "Id": "62a4046b21bf426d8463a70481dc629d",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "4f995e2e5f3f428f83502dd530b00332",
+      "End": "2982310a32354ea89a9b3116723b0c69",
+      "Id": "820dc2e06edd40b6bd1413edf956098b",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "91dce243eb4d491cad323169cc2b1e4b",
+      "End": "95da40aa924c49c2bf90433fb0d3664f",
+      "Id": "a130c2a6b4204e3583761c3d72c7e0f7",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "a0570ff846974abba403c38a977e7381",
+      "End": "cb01bc37f41843ddb69df426d8aea7dd",
+      "Id": "fe75bb25796e4671bd7be70ec87ff376",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "876c4f8dbe624b77b2ce53a68c45fbfa",
+      "End": "718fe38326bc4f4982b97ad14c1a71f6",
+      "Id": "930a9a8176c840b28ca14caf48a5bb77",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "d0d0218936754d23a757258e58099919",
+      "End": "7e25b4bb0ac043d79e6e52f0abdd7573",
+      "Id": "80654f204b14409e8dd636bc95c07290",
+      "IsHidden": "False"
+    },
+    {
+      "Start": "a7184849ab044a8eae4ea08493a71040",
+      "End": "f88cb7f72112459d80e26fe770b4ab0d",
+      "Id": "94a22041a17b40f2bbb38645741d51d8",
+      "IsHidden": "False"
+    }
+  ],
+  "Dependencies": [],
+  "NodeLibraryDependencies": [],
+  "EnableLegacyPolyCurveBehavior": true,
+  "Thumbnail": "",
+  "GraphDocumentationURL": null,
+  "ExtensionWorkspaceData": [
+    {
+      "ExtensionGuid": "28992e1d-abb9-417f-8b1b-05e053bee670",
+      "Name": "Properties",
+      "Version": "3.5",
+      "Data": {}
+    },
+    {
+      "ExtensionGuid": "DFBD9CC0-DB40-457A-939E-8C8555555A9D",
+      "Name": "Generative Design",
+      "Version": "9.1",
+      "Data": {}
+    }
+  ],
+  "Author": "",
+  "Linting": {
+    "activeLinter": "None",
+    "activeLinterId": "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+    "warningCount": 0,
+    "errorCount": 0
+  },
+  "Bindings": [],
+  "View": {
+    "Dynamo": {
+      "ScaleFactor": 100.0,
+      "HasRunWithoutCrash": true,
+      "IsVisibleInDynamoLibrary": true,
+      "Version": "3.6.2.11575",
+      "RunType": "Manual",
+      "RunPeriod": "1000"
+    },
+    "Camera": {
+      "Name": "_Background Preview",
+      "EyeX": -17.0,
+      "EyeY": 24.0,
+      "EyeZ": 50.0,
+      "LookX": 12.0,
+      "LookY": -13.0,
+      "LookZ": -58.0,
+      "UpX": 0.0,
+      "UpY": 1.0,
+      "UpZ": 0.0
+    },
+    "ConnectorPins": [],
+    "NodeViews": [
+      {
+        "Id": "e96ce018c815417a875322a4fe7eef52",
+        "Name": "Python Script",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 1106.0540504857154,
+        "Y": -126.03176374804241
+      },
+      {
+        "Id": "98ebdbbfa021444faee323a39c9944ae",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2509.30524431718,
+        "Y": -355.4366125494748
+      },
+      {
+        "Id": "aee6796adfc74b9e8e921d31eda00eb1",
+        "Name": "All Elements of Category",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -31.195492414558203,
+        "Y": -214.20659438804438
+      },
+      {
+        "Id": "7a37089f26e4408ca692e38d05bcfa87",
+        "Name": "List.GetItemAtIndex",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2231.3202026874173,
+        "Y": -233.2451693486562
+      },
+      {
+        "Id": "7e62a894c44949469cce3ddb0097ef98",
+        "Name": "Number",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2025.9715427347398,
+        "Y": -91.51138918628607
+      },
+      {
+        "Id": "d0d03b0ce0634ebba4d8350c76f1bd49",
+        "Name": "List.GetItemAtIndex",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2376.6334656637073,
+        "Y": -787.4792705204329
+      },
+      {
+        "Id": "5a20dc1deea14a26bab4df551842179a",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2824.309850080771,
+        "Y": -808.1744463162336
+      },
+      {
+        "Id": "f1eeca99f7a343c39d143e51d727be9f",
+        "Name": "Number",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2231.850704221323,
+        "Y": -592.0900237220055
+      },
+      {
+        "Id": "73ada9e18cd34928b1b066c33a07f60d",
+        "Name": "List.GetItemAtIndex",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2169.927919706163,
+        "Y": 325.8665912099983
+      },
+      {
+        "Id": "c51f6a1bbf8345039543916cbd6d81c6",
+        "Name": "Number",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 1940.7797401288096,
+        "Y": 464.298760239751
+      },
+      {
+        "Id": "2af3eb83559c46feb53dbf3f38d646bf",
+        "Name": "Number",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 1905.7731315161834,
+        "Y": 173.41612572376954
+      },
+      {
+        "Id": "bcc019f1a3c74c0da41dff737735490b",
+        "Name": "List.GetItemAtIndex",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2137.4037060823466,
+        "Y": 61.24269650499883
+      },
+      {
+        "Id": "80a5a092c2814112bc26b1d8de0b25fd",
+        "Name": "List Create",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 358.6427011326625,
+        "Y": 43.12280227995029
+      },
+      {
+        "Id": "24b134c4d0a644a8a3dcd25e86510228",
+        "Name": "List.Flatten",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 612.2722879247625,
+        "Y": -1.481627491200527
+      },
+      {
+        "Id": "30282ac388dc4ccfbdfa3b2f6064018c",
+        "Name": "Categories",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -318.9739004771601,
+        "Y": -217.3497672715602
+      },
+      {
+        "Id": "e050c87846ff4af5a1039b29ce34124d",
+        "Name": "Categories",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -311.914954352035,
+        "Y": 69.41217026177674
+      },
+      {
+        "Id": "be0a19afc55b4c65a322c95d207fe71f",
+        "Name": "Categories",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -310.4307062761377,
+        "Y": 340.9674079306444
+      },
+      {
+        "Id": "e66b517989384fd38d79c35e303c2cd8",
+        "Name": "Categories",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -314.4208701514492,
+        "Y": 209.24096519379287
+      },
+      {
+        "Id": "a8172b7074ee48dda742c76aee8c7a02",
+        "Name": "Categories",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -315.97796204844565,
+        "Y": -72.72767220401312
+      },
+      {
+        "Id": "1d243a4a18864e4bba55d1e15577f6d2",
+        "Name": "All Elements of Category",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -25.896417725624246,
+        "Y": -68.70851923917877
+      },
+      {
+        "Id": "bf9129d841b54fad815f57711990f89b",
+        "Name": "All Elements of Category",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -12.422147020427019,
+        "Y": 77.66553599100558
+      },
+      {
+        "Id": "f8a42d8ed6a749e582140cdaac9acf63",
+        "Name": "All Elements of Category",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -17.410315421598284,
+        "Y": 354.30544907980095
+      },
+      {
+        "Id": "352a3c9d611f40bcb1dd563a5d9a5abd",
+        "Name": "All Elements of Category",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 16.890754741475575,
+        "Y": 217.980574473059
+      },
+      {
+        "Id": "eebbf603b9304a4d85fc2bdeeca24484",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2605.0105910519906,
+        "Y": 372.3634450164477
+      },
+      {
+        "Id": "120aaedd1159464cb58806f805342300",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2583.468752700916,
+        "Y": 606.1353808539502
+      },
+      {
+        "Id": "013604290663456c8446affe40baa9ab",
+        "Name": "List.GetItemAtIndex",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2225.9688942914377,
+        "Y": 607.5617936218891
+      },
+      {
+        "Id": "e429c6cccc6545b78ea318b6b6d71401",
+        "Name": "Number",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2031.3276209517646,
+        "Y": 810.732342727703
+      },
+      {
+        "Id": "017067764b9544a1a688c78cdb7493af",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2651.9811058981236,
+        "Y": 1041.3902551626136
+      },
+      {
+        "Id": "99f1e1a4cfe9468286e294db5bbf5d03",
+        "Name": "List.GetItemAtIndex",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2304.832057229427,
+        "Y": 1034.8959350226573
+      },
+      {
+        "Id": "38df7d8ec15d45ef926a1574e0784a86",
+        "Name": "Number",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2066.9910293648036,
+        "Y": 1189.1645604298174
+      },
+      {
+        "Id": "02506d7d8be34021b91cb72480dd9739",
+        "Name": "Categories",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -314.50733411238366,
+        "Y": 582.4640766414523
+      },
+      {
+        "Id": "e71969fb97ad486e912dd3664536c154",
+        "Name": "All Elements of Category",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": -17.692735205580334,
+        "Y": 588.1711592784131
+      },
+      {
+        "Id": "73f709679b3144e392f220d7b13facf0",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2495.195445341267,
+        "Y": -46.91548811032902
+      },
+      {
+        "Id": "37b05e2e68ac4e41aff802a11080de99",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2692.3900331910763,
+        "Y": 1494.4768130637701
+      },
+      {
+        "Id": "5e89ef7c15df4bc2baa0c963aee086f2",
+        "Name": "List.GetItemAtIndex",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 2198.6178442810783,
+        "Y": 1544.018761945612
+      },
+      {
+        "Id": "133ca11ad41249fbaff1cf4b4ad699be",
+        "Name": "Number",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 1917.0717877255254,
+        "Y": 1716.1816332518172
+      },
+      {
+        "Id": "305c4e959e7c48cd9e5654da5ec19662",
+        "Name": "Watch",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 1558.021593454853,
+        "Y": -510.7572118462257
+      },
+      {
+        "Id": "a7cbd6d7e0fa422f8f5587f0f904207c",
+        "Name": "List.Count",
+        "IsSetAsInput": false,
+        "IsSetAsOutput": false,
+        "Excluded": false,
+        "ShowGeometry": true,
+        "X": 1337.2598934198882,
+        "Y": -370.89635938593153
+      }
+    ],
+    "Annotations": [],
+    "X": 740.0193427043512,
+    "Y": 277.8978525729701,
+    "Zoom": 1.2773523517262997
+  }
+}
